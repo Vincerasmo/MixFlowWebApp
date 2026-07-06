@@ -49,7 +49,8 @@ builder.Services.AddSwaggerGen(options =>
     options.SwaggerDoc("v1", new OpenApiInfo
     {
         Title = "MixFlow API",
-        Version = "v1"
+        Version = "v1",
+        Description = "Pickleball Stacking Management System"
     });
 
     options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
