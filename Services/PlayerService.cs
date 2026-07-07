@@ -1,7 +1,7 @@
-﻿using AutoMapper;
+﻿
 using Microsoft.EntityFrameworkCore;
+using MixFlowWebApp.Constants;
 using MixFlowWebApp.Data;
-using MixFlowWebApp.DTOs.PlayerDTOs;
 using MixFlowWebApp.Interfaces.Services;
 using MixFlowWebApp.Models;
 
@@ -19,6 +19,12 @@ namespace MixFlowWebApp.Services
         /// Add a new player (returns entity).
         public async Task<Player> AddPlayerAsync(Player player)
         {
+            if (!string.IsNullOrEmpty(player.SkillCategory) &&
+                SkillRatingDefaults.Ratings.TryGetValue(player.SkillCategory, out var rating))
+            {
+                player.SkillLevel = rating; // auto-assign predefined rating
+            }
+
             _context.Players.Add(player);
             await _context.SaveChangesAsync();
             return player;
@@ -45,14 +51,20 @@ namespace MixFlowWebApp.Services
 
             // Update only non-null values
             player.FullName = updatedPlayer.FullName ?? player.FullName;
-            player.SkillCategory = updatedPlayer.SkillCategory ?? player.SkillCategory;
-            player.SkillLevel = updatedPlayer.SkillLevel != 0 ? updatedPlayer.SkillLevel : player.SkillLevel;
-            player.DUPR = updatedPlayer.DUPR ?? player.DUPR;
+
+            if (!string.IsNullOrEmpty(updatedPlayer.SkillCategory) &&
+                SkillRatingDefaults.Ratings.TryGetValue(updatedPlayer.SkillCategory, out var rating))
+            {
+                player.SkillCategory = updatedPlayer.SkillCategory;
+                player.SkillLevel = rating; // auto-assign predefined rating
+            }
+
             player.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
             return player;
         }
+
 
         /// Delete a player (hard delete).
         public async Task<bool> DeletePlayerAsync(int playerId)

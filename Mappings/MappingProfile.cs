@@ -19,8 +19,10 @@ namespace MixFlowWebApp.Mappings
 
             // Player Mappings
             CreateMap<Player, PlayerDto>().ReverseMap();
-            CreateMap<CreatePlayerDto, Player>();
+            CreateMap<CreatePlayerDto, Player>()
+                .ForMember(dest => dest.SkillLevel, opt => opt.Ignore()); // handled in service
             CreateMap<UpdatePlayerDto, Player>()
+                .ForMember(dest => dest.SkillLevel, opt => opt.Ignore())  // handled in service
                 .ForAllMembers(opts => opts.Condition((src, dest, srcMember) => srcMember != null));
 
             // Session Mappings
