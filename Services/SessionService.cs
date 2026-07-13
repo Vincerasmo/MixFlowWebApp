@@ -42,16 +42,29 @@ namespace MixFlowWebApp.Services
             return await _context.Sessions
                 .Include(s => s.SessionPlayers)
                     .ThenInclude(sp => sp.Player)
+                .Include(s => s.Matches)
                 .FirstOrDefaultAsync(s => s.SessionId == sessionId);
         }
 
-        /// Get all sessions for a specific organizer (returns entities).
         public async Task<List<Session>> GetOrganizerSessionsAsync(int organizerId)
         {
             return await _context.Sessions
                 .Where(s => s.OrganizerId == organizerId)
+                .Include(s => s.Matches)
                 .OrderByDescending(s => s.SessionDate)
                 .ToListAsync();
+        }
+
+        /// Get the organizer's current active session, if one exists.
+        /// If an organizer somehow has more than one Active session, the most recently
+        /// dated one wins — but normal flow (CreateSession sets Active, EndSession sets
+        /// Completed) should only ever leave at most one Active session per organizer.
+        public async Task<Session?> GetActiveSessionByOrganizerAsync(int organizerId)
+        {
+            return await _context.Sessions
+                .Where(s => s.OrganizerId == organizerId && s.Status == SessionStatus.Active)
+                .OrderByDescending(s => s.SessionDate)
+                .FirstOrDefaultAsync();
         }
 
         /// Update session details (returns entity).

@@ -11,5 +11,12 @@
         public string? BenchReason { get; set; }
         public DateTime? CheckInTime { get; set; }
         public DateTime? BenchedAt { get; set; }
+
+        // How many matches this player has played within THIS session (not lifetime).
+        public int GamesPlayedInSession { get; set; }
+
+        // Lock-pair info, if this player has locked in with a partner for this session.
+        public int? LockedPartnerId { get; set; }
+        public string? LockedPartnerName { get; set; }
     }
 }

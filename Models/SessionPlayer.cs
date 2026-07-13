@@ -10,6 +10,12 @@
         public string? BenchReason { get; set; }
         public DateTime? BenchedAt { get; set; }
 
+        // The PlayerId of the partner this player is locked with in this session, if any.
+        // Symmetric: when A locks with B, both rows get each other's PlayerId here.
+        // Not FK-constrained (deliberately) since it points to a PlayerId, not a SessionPlayerId,
+        // and only makes sense scoped to this same SessionId.
+        public int? LockedPartnerId { get; set; }
+
         public Session Session { get; set; } = null!;
         public Player Player { get; set; } = null!;
     }

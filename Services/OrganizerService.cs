@@ -26,26 +26,12 @@ namespace MixFlowWebApp.Services
         }
 
         /// Get an organizer by UserId, or create one if not found (returns entity).
-        public async Task<Organizer> GetOrCreateOrganizerAsync(string userId, string fullName, string email)
+        public async Task<Organizer?> GetOrganizerForLoginAsync(string userId, string email)
         {
-            var organizer = await _context.Organizers
+            if (string.IsNullOrWhiteSpace(userId) && string.IsNullOrWhiteSpace(email)) return null;
+
+            return await _context.Organizers
                 .FirstOrDefaultAsync(o => o.UserId == userId || o.Email == email);
-
-            if (organizer == null)
-            {
-                organizer = new Organizer
-                {
-                    UserId = userId,
-                    FullName = fullName,
-                    Email = email,
-                    CreatedAt = DateTime.UtcNow
-                };
-
-                _context.Organizers.Add(organizer);
-                await _context.SaveChangesAsync();
-            }
-
-            return organizer;
         }
 
         /// Create a new organizer explicitly (returns entity).

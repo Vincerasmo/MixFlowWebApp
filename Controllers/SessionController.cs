@@ -78,6 +78,22 @@ namespace MixFlowWebApp.Controllers
             return Ok(_mapper.Map<List<SessionDto>>(sessions));
         }
 
+        /// The organizer's current in-progress session, if any.
+        [HttpGet("active")]
+        public async Task<ActionResult<SessionDto>> GetActiveSession()
+        {
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrEmpty(userId)) return Unauthorized(new { error = "User not authenticated" });
+
+            var organizer = await _organizerService.GetOrganizerByUserIdAsync(userId);
+            if (organizer == null) return Unauthorized(new { error = "Organizer account not found" });
+
+            var session = await _sessionService.GetActiveSessionByOrganizerAsync(organizer.OrganizerId);
+            if (session == null) return NotFound(new { error = "No active session found" });
+
+            return Ok(_mapper.Map<SessionDto>(session));
+        }
+
         [HttpPut("{id}")]
         public async Task<ActionResult> UpdateSession(int id, [FromBody] UpdateSessionDto dto)
         {
@@ -120,47 +136,16 @@ namespace MixFlowWebApp.Controllers
             return CreatedAtAction(nameof(GetSessionPlayers), new { sessionId }, _mapper.Map<SessionPlayerDto>(sessionPlayer));
         }
 
+        /// Returns session players enriched with games-played-in-this-session and
+        /// lock-pair info — this is what the "manage players" table on the session
+        /// page should render from.
         [HttpGet("{sessionId}/players")]
         public async Task<ActionResult<List<SessionPlayerDto>>> GetSessionPlayers(int sessionId)
         {
             if (sessionId <= 0) return BadRequest(new { error = "Invalid session ID" });
 
-            var players = await _sessionPlayerService.GetSessionPlayersAsync(sessionId);
-            return Ok(_mapper.Map<List<SessionPlayerDto>>(players));
-        }
-
-        [HttpPost("{sessionId}/players/bench")]
-        public async Task<ActionResult> BenchPlayer(int sessionId, [FromBody] BenchPlayerDto dto)
-        {
-            if (sessionId <= 0) return BadRequest(new { error = "Invalid session ID" });
-            if (!ModelState.IsValid) return BadRequest(new { error = "Invalid input" });
-
-            var result = await _sessionPlayerService.BenchPlayerAsync(sessionId, dto.PlayerId, dto.Reason);
-            if (result == null) return NotFound(new { error = "Player not found in this session" });
-
-            _logger.LogInformation("Player {PlayerId} benched in Session {SessionId}", dto.PlayerId, sessionId);
-            return Ok(new { message = "Player benched successfully", reason = dto.Reason });
-        }
-
-        [HttpPost("{sessionId}/players/{playerId}/return")]
-        public async Task<ActionResult> ReturnFromBench(int sessionId, int playerId)
-        {
-            if (sessionId <= 0 || playerId <= 0) return BadRequest(new { error = "Invalid session ID or player ID" });
-
-            var result = await _sessionPlayerService.ReturnFromBenchAsync(sessionId, playerId);
-            if (result == null) return NotFound(new { error = "Player not found in this session or not benched" });
-
-            _logger.LogInformation("Player {PlayerId} returned from bench in Session {SessionId}", playerId, sessionId);
-            return Ok(new { message = "Player returned from bench successfully" });
-        }
-
-        [HttpGet("{sessionId}/players/benched")]
-        public async Task<ActionResult<List<SessionPlayerDto>>> GetBenchedPlayers(int sessionId)
-        {
-            if (sessionId <= 0) return BadRequest(new { error = "Invalid session ID" });
-
-            var benched = await _sessionPlayerService.GetBenchPlayersAsync(sessionId);
-            return Ok(_mapper.Map<List<SessionPlayerDto>>(benched));
+            var players = await _sessionPlayerService.GetSessionPlayersWithStatsAsync(sessionId);
+            return Ok(players);
         }
 
         [HttpDelete("{sessionId}/players/{playerId}")]
@@ -178,6 +163,35 @@ namespace MixFlowWebApp.Controllers
 
             _logger.LogInformation("Player {PlayerId} removed from Session {SessionId}", playerId, sessionId);
             return NoContent();
+        }
+
+        /// Lock two players in this session as a fixed pair. They'll always be placed
+        /// on the same team together whenever the auto-mix/auto-fill logic builds a match.
+        [HttpPost("{sessionId}/players/{playerId}/lock/{partnerId}")]
+        public async Task<ActionResult> LockPair(int sessionId, int playerId, int partnerId)
+        {
+            if (sessionId <= 0 || playerId <= 0 || partnerId <= 0)
+                return BadRequest(new { error = "Invalid session, player, or partner ID" });
+
+            var success = await _sessionPlayerService.LockPairAsync(sessionId, playerId, partnerId);
+            if (!success)
+                return BadRequest(new { error = "Couldn't lock these players — check both are checked in, not benched, and not already locked with someone else." });
+
+            _logger.LogInformation("Players {PlayerId} and {PartnerId} locked as a pair in Session {SessionId}", playerId, partnerId, sessionId);
+            return Ok(new { message = "Players locked as a pair." });
+        }
+
+        /// Unlock a player from their current pair.
+        [HttpPost("{sessionId}/players/{playerId}/unlock")]
+        public async Task<ActionResult> UnlockPair(int sessionId, int playerId)
+        {
+            if (sessionId <= 0 || playerId <= 0) return BadRequest(new { error = "Invalid session or player ID" });
+
+            var success = await _sessionPlayerService.UnlockPairAsync(sessionId, playerId);
+            if (!success) return NotFound(new { error = "Player isn't currently locked with a partner." });
+
+            _logger.LogInformation("Player {PlayerId} unlocked from their pair in Session {SessionId}", playerId, sessionId);
+            return Ok(new { message = "Pair unlocked." });
         }
 
         #endregion

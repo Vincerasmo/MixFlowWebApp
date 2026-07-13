@@ -13,6 +13,7 @@ namespace MixFlowWebApp.Services
         private readonly IMemoryCache _cache;
         private const int SessionLeaderboardLimit = 30;
         private const int OverallLeaderboardLimit = 30;
+        private const string OverallLeaderboardCacheKey = "OverallLeaderboard";
 
         public LeaderboardService(MixFlowDbContext context, IMemoryCache cache)
         {
@@ -52,38 +53,71 @@ namespace MixFlowWebApp.Services
         }
 
         // ---------------- Overall Leaderboard ----------------
+        // ---------------- Overall Leaderboard (weekly, resets every Sunday) ----------------
         public async Task<List<LeaderboardPlayerDto>> GetOverallLeaderboardAsync()
         {
-            string cacheKey = "OverallLeaderboard";
+            var startOfWeek = GetStartOfWeekSunday(DateTime.UtcNow);
+            var cacheKey = $"{OverallLeaderboardCacheKey}_{startOfWeek:yyyyMMdd}";
+
             if (!_cache.TryGetValue(cacheKey, out List<LeaderboardPlayerDto>? players))
             {
-                players = await _context.Players
-                    .OrderByDescending(p => p.TotalWins)
+                var weeklyStats = await _context.MatchPlayers
+                    .Where(mp => mp.Match.IsCompleted && mp.Match.EndTime != null && mp.Match.EndTime >= startOfWeek)
+                    .GroupBy(mp => mp.PlayerId)
+                    .Select(g => new
+                    {
+                        PlayerId = g.Key,
+                        GamesPlayed = g.Count(),
+                        Wins = g.Count(x => x.IsWinner == true),
+                        Losses = g.Count(x => x.IsWinner == false)
+                    })
+                    .Where(x => x.GamesPlayed > 0)
+                    .ToListAsync();
+
+                var playerIds = weeklyStats.Select(w => w.PlayerId).ToList();
+                var playerInfo = await _context.Players
+                    .Where(p => playerIds.Contains(p.PlayerId))
+                    .ToDictionaryAsync(p => p.PlayerId, p => p);
+
+                players = weeklyStats
+                    .Where(w => playerInfo.ContainsKey(w.PlayerId))
+                    .Select(w => new LeaderboardPlayerDto
+                    {
+                        PlayerId = w.PlayerId,
+                        FullName = playerInfo[w.PlayerId].FullName,
+                        GamesPlayed = w.GamesPlayed,
+                        Wins = w.Wins,
+                        Losses = w.Losses,
+                        WinPercentage = w.GamesPlayed > 0 ? Math.Round((decimal)w.Wins * 100 / w.GamesPlayed, 2) : 0,
+                        SkillLevel = playerInfo[w.PlayerId].SkillLevel
+                    })
+                    .OrderByDescending(p => p.Wins)
                     .ThenByDescending(p => p.WinPercentage)
                     .ThenByDescending(p => p.SkillLevel)
                     .Take(OverallLeaderboardLimit)
-                    .Select(p => new LeaderboardPlayerDto
-                    {
-                        PlayerId = p.PlayerId,
-                        FullName = p.FullName,
-                        GamesPlayed = p.GamesPlayed,
-                        Wins = p.TotalWins,
-                        Losses = p.TotalLosses,
-                        WinPercentage = p.WinPercentage,
-                        SkillLevel = p.SkillLevel
-                    })
-                    .ToListAsync();
+                    .ToList();
 
-                // ✅ Assign rank
                 int rank = 1;
                 foreach (var player in players)
                 {
                     player.Rank = rank++;
                 }
 
-                _cache.Set(cacheKey, players, TimeSpan.FromMinutes(10080)); // cache for 1 week
+                _cache.Set(cacheKey, players, TimeSpan.FromMinutes(10080));
             }
             return players!;
+        }
+
+        public void InvalidateOverallLeaderboardCache()
+        {
+            var startOfWeek = GetStartOfWeekSunday(DateTime.UtcNow);
+            _cache.Remove($"{OverallLeaderboardCacheKey}_{startOfWeek:yyyyMMdd}");
+        }
+
+        private static DateTime GetStartOfWeekSunday(DateTime utcNow)
+        {
+            var diff = (int)utcNow.Date.DayOfWeek; // Sunday = 0
+            return utcNow.Date.AddDays(-diff);
         }
 
         // ---------------- Snapshots ----------------
