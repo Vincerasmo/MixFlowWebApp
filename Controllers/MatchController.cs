@@ -7,7 +7,6 @@ using MixFlowWebApp.DTOs.MatchDTOs;
 using MixFlowWebApp.DTOs.QueueEntryDTOs;
 using MixFlowWebApp.DTOs.SessionPlayerDTOs;
 using MixFlowWebApp.Interfaces.Services;
-using MixFlowWebApp.Models;
 
 namespace MixFlowWebApp.Controllers
 {
@@ -65,7 +64,8 @@ namespace MixFlowWebApp.Controllers
             return Ok(_mapper.Map<List<QueueEntryDto>>(items));
         }
 
-        // 3) Auto-match: fill courts from queue
+        // 3) Auto-match: promote next-up matches to free courts and top the next-up
+        // queue back up to 2 prepared matches.
         [HttpPost("auto-match")]
         public async Task<IActionResult> AutoMatch(int sessionId)
         {
@@ -85,33 +85,9 @@ namespace MixFlowWebApp.Controllers
             }
         }
 
-        // 4) Manually create one match
-        // Smart Mix — manual: organizer-selected pairs, targeted at one specific court.
-        [HttpPost("court/{courtNumber}/manual-mix")]
-        public async Task<ActionResult<MatchDto>> ManualMixCourt(int sessionId, int courtNumber, [FromBody] SmartMixRequestDto dto)
-        {
-            using var transaction = await _context.Database.BeginTransactionAsync();
-            try
-            {
-                var match = await _matchService.CreateManualMatchForCourtAsync(sessionId, courtNumber, dto.Pairs);
-                await _context.SaveChangesAsync();
-                await transaction.CommitAsync();
-
-                var full = await _context.Matches
-                    .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
-                    .FirstAsync(m => m.MatchId == match.MatchId);
-
-                return Ok(_mapper.Map<MatchDto>(full));
-            }
-            catch (InvalidOperationException ex)
-            {
-                await transaction.RollbackAsync();
-                return BadRequest(new { error = ex.Message });
-            }
-        }
-
-        // 4.5) Fill exactly one specific court from the queue — unlike auto-match, this
-        // never touches any other court, even if several are free at once.
+        // 4) Fill exactly one specific court from the queue — unlike auto-match, this
+        // never touches any other court, even if several are free at once. Promotes an
+        // already-prepared next-up match if one exists, otherwise builds a fresh one.
         [HttpPost("court/{courtNumber}/smart-mix")]
         public async Task<ActionResult<MatchDto>> SmartMixCourt(int sessionId, int courtNumber)
         {
@@ -154,11 +130,9 @@ namespace MixFlowWebApp.Controllers
             using var transaction = await _context.Database.BeginTransactionAsync();
             try
             {
-                // 🐛 FIX: RecordMatchResultAsync already calls HandlePostMatchAsync internally
-                // (it did before this change too) — this controller was calling it a SECOND
-                // time right after, which redundantly re-ran queue priority updates and
-                // auto-fill for every single result. Removed the duplicate call; the service
-                // call below is the only one now.
+                // RecordMatchResultAsync already calls HandlePostMatchAsync internally,
+                // so this controller must not call it again — doing so would redundantly
+                // re-run queue priority updates and auto-fill for every single result.
                 var match = await _matchService.RecordMatchResultAsync(
                     sessionId,
                     dto.CourtNumber,
@@ -206,12 +180,62 @@ namespace MixFlowWebApp.Controllers
             return Ok(_mapper.Map<List<MatchDto>>(matches));
         }
 
-        // 8) Get active matches
+        // 8) Get active (on-court, in-progress) matches
         [HttpGet("active")]
         public async Task<ActionResult<List<MatchDto>>> GetActiveMatches(int sessionId)
         {
             var matches = await _matchService.GetActiveMatchesAsync(sessionId);
             return Ok(_mapper.Map<List<MatchDto>>(matches));
+        }
+
+        // 8.5) Get "next up" matches — prepared, not yet on a court (target: 2). This is
+        // what the queue page's next-up cards should render from.
+        [HttpGet("next-up")]
+        public async Task<ActionResult<List<MatchDto>>> GetNextUpMatches(int sessionId)
+        {
+            var matches = await _matchService.GetNextUpMatchesAsync(sessionId);
+            return Ok(_mapper.Map<List<MatchDto>>(matches));
+        }
+
+        // 8.6) Edit a next-up match: swap two of its players between Team 1 and Team 2.
+        [HttpPut("next-up/{matchId}/swap-teams")]
+        public async Task<ActionResult<MatchDto>> SwapNextUpMatchTeams(int sessionId, int matchId, [FromBody] SwapMatchTeamsDto dto)
+        {
+            using var transaction = await _context.Database.BeginTransactionAsync();
+            try
+            {
+                var match = await _matchService.SwapMatchTeamsAsync(sessionId, matchId, dto.PlayerAId, dto.PlayerBId);
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                return Ok(_mapper.Map<MatchDto>(match));
+            }
+            catch (InvalidOperationException ex)
+            {
+                await transaction.RollbackAsync();
+                return BadRequest(new { error = ex.Message });
+            }
+        }
+
+        // 8.7) Edit a next-up match: swap one of its players out for a player currently
+        // waiting in the queue. The bumped player goes back to the queue.
+        [HttpPut("next-up/{matchId}/swap-with-queue")]
+        public async Task<ActionResult<MatchDto>> SwapNextUpMatchWithQueue(int sessionId, int matchId, [FromBody] SwapWithQueueDto dto)
+        {
+            using var transaction = await _context.Database.BeginTransactionAsync();
+            try
+            {
+                var match = await _matchService.SwapMatchWithQueueAsync(sessionId, matchId, dto.PlayerOutId, dto.PlayerInId);
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                return Ok(_mapper.Map<MatchDto>(match));
+            }
+            catch (InvalidOperationException ex)
+            {
+                await transaction.RollbackAsync();
+                return BadRequest(new { error = ex.Message });
+            }
         }
 
         // 9) Bench a player — also pulls them out of the queue if they were waiting,

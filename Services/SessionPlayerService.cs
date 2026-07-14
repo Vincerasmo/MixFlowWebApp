@@ -1,5 +1,6 @@
 ﻿using AutoMapper;
 using Microsoft.EntityFrameworkCore;
+using MixFlowWebApp.Constants;
 using MixFlowWebApp.Data;
 using MixFlowWebApp.DTOs.SessionPlayerDTOs;
 using MixFlowWebApp.Interfaces.Services;
@@ -16,10 +17,12 @@ namespace MixFlowWebApp.Services
     public class SessionPlayerService : ISessionPlayerService
     {
         private readonly MixFlowDbContext _context;
+        private readonly IMatchService _matchService;   
 
-        public SessionPlayerService(MixFlowDbContext context)
+        public SessionPlayerService(MixFlowDbContext context, IMatchService matchService)
         {
             _context = context;
+            _matchService = matchService;
         }
 
         /// Add a player to a session (check-in).
@@ -41,6 +44,20 @@ namespace MixFlowWebApp.Services
 
             _context.SessionPlayers.Add(sessionPlayer);
             await _context.SaveChangesAsync();
+
+            // Being added to the session and being in line to play are the same moment now —
+            // there's no longer a gap where a player is "checked in" but invisible everywhere
+            // on the Queue page.
+            try
+            {
+                await _matchService.EnqueuePlayerAsync(sessionId, playerId);
+                await _context.SaveChangesAsync();
+            }
+            catch (InvalidOperationException)
+            {
+                // Session isn't Active yet, or similar — fine, they're still added to the
+                // roster, just not queued. Not worth failing the whole add-to-roster call over.
+            }
 
             return await _context.SessionPlayers
                 .Include(sp => sp.Player)
@@ -159,7 +176,10 @@ namespace MixFlowWebApp.Services
             }).ToList();
         }
 
-        /// Lock two players together as a fixed pair for this session.
+        /// Lock two players together as a fixed pair for this session. If both players are
+        /// already sitting in the "next up" queue (or one is queued and the other still
+        /// waiting), they're immediately reorganized so the lock takes effect right away —
+        /// not just the next time the queue happens to be rebuilt from scratch.
         public async Task<bool> LockPairAsync(int sessionId, int playerId, int partnerId)
         {
             if (playerId == partnerId) return false;
@@ -177,6 +197,9 @@ namespace MixFlowWebApp.Services
             b.LockedPartnerId = playerId;
 
             await _context.SaveChangesAsync();
+
+            await TryPairLockedPartnersImmediatelyAsync(sessionId, playerId, partnerId);
+
             return true;
         }
 
@@ -197,6 +220,149 @@ namespace MixFlowWebApp.Services
 
             await _context.SaveChangesAsync();
             return true;
+        }
+
+        // ---------------- Locked-pair reorganization ----------------
+
+        /// If both newly-locked players are already sitting in a "next up" (Ready) match
+        /// and/or the queue — but not yet actually playing — pull whichever one(s) are
+        /// needed so they land on the same team of the same match. Matches that are
+        /// currently Active (on a court, in progress) are never touched; if either player
+        /// is mid-game the lock simply takes effect the next time they're re-queued.
+        private async Task TryPairLockedPartnersImmediatelyAsync(int sessionId, int playerId, int partnerId)
+        {
+            var openMatches = await _context.Matches
+                .Where(m => m.SessionId == sessionId && (m.Status == MatchStatus.Ready || m.Status == MatchStatus.Active))
+                .Include(m => m.MatchPlayers)
+                .ToListAsync();
+
+            Match? FindMatchOf(int pid) => openMatches.FirstOrDefault(m => m.MatchPlayers.Any(mp => mp.PlayerId == pid));
+
+            var matchA = FindMatchOf(playerId);
+            var matchB = FindMatchOf(partnerId);
+
+            // Can't touch a match that's already being played.
+            if (matchA?.Status == MatchStatus.Active || matchB?.Status == MatchStatus.Active) return;
+
+            // Already together.
+            if (matchA != null && matchB != null && matchA.MatchId == matchB.MatchId) return;
+
+            // Neither is placed in a next-up match yet, so there's nothing to reorganize —
+            // the normal next-up builder will pair them together once it next runs.
+            if (matchA == null && matchB == null) return;
+
+            var targetMatch = matchA ?? matchB!;
+            var otherMatch = matchA != null ? matchB : matchA;
+            var incomingPlayerId = matchA != null ? partnerId : playerId;
+            var stayingPlayerId = matchA != null ? playerId : partnerId;
+
+            var incomingInQueue = otherMatch == null && await _context.QueueEntries
+                .AnyAsync(q => q.SessionId == sessionId && q.PlayerId == incomingPlayerId && q.Status == "Waiting");
+
+            if (otherMatch == null && !incomingInQueue) return;
+
+            var stayingSlot = targetMatch.MatchPlayers.FirstOrDefault(mp => mp.PlayerId == stayingPlayerId);
+            if (stayingSlot == null) return;
+
+            var bumpedSlot = targetMatch.MatchPlayers.FirstOrDefault(mp => mp.TeamNumber == stayingSlot.TeamNumber && mp.PlayerId != stayingPlayerId);
+            if (bumpedSlot == null) return;
+
+            var bumpedPlayerId = bumpedSlot.PlayerId;
+
+            if (otherMatch != null)
+            {
+                var incomingSlot = otherMatch.MatchPlayers.FirstOrDefault(mp => mp.PlayerId == incomingPlayerId);
+                if (incomingSlot == null) return;
+
+                otherMatch.MatchPlayers.Remove(incomingSlot);
+                _context.MatchPlayers.Remove(incomingSlot);
+            }
+            else
+            {
+                var incomingQueueEntry = await _context.QueueEntries
+                    .FirstAsync(q => q.SessionId == sessionId && q.PlayerId == incomingPlayerId && q.Status == "Waiting");
+                incomingQueueEntry.Status = "InMatch";
+                incomingQueueEntry.Position = null;
+            }
+
+            // Reuse the bumped player's row for the incoming player, rather than
+            // add/remove, so the pair ends up on the same team as stayingPlayerId.
+            bumpedSlot.PlayerId = incomingPlayerId;
+
+            await ReturnPlayerToWaitingQueueAsync(sessionId, bumpedPlayerId);
+
+            // Pulling the incoming player out of their old ready match leaves it one
+            // player short — backfill it from the queue, or dissolve it if no one's free.
+            if (otherMatch != null)
+            {
+                await BackfillOrDissolveMatchAsync(sessionId, otherMatch);
+            }
+
+            await _context.SaveChangesAsync();
+        }
+
+        private async Task BackfillOrDissolveMatchAsync(int sessionId, Match match)
+        {
+            var lockedPartnerByPlayerId = await _context.SessionPlayers
+                .Where(sp => sp.SessionId == sessionId && sp.LockedPartnerId != null)
+                .ToDictionaryAsync(sp => sp.PlayerId, sp => sp.LockedPartnerId!.Value);
+
+            var waiting = await _context.QueueEntries
+                .Where(q => q.SessionId == sessionId && q.Status == "Waiting")
+                .OrderByDescending(q => q.PriorityScore ?? 0m)
+                .ThenBy(q => q.CheckInTime)
+                .ToListAsync();
+
+            // Prefer a player who isn't locked to anyone, so backfilling this seat doesn't
+            // just split off yet another locked pair.
+            var pick = waiting.FirstOrDefault(q => !lockedPartnerByPlayerId.ContainsKey(q.PlayerId))
+                       ?? waiting.FirstOrDefault();
+
+            if (pick == null)
+            {
+                // No one available to fill the last seat — dissolve the match and send
+                // everyone still in it back to the queue.
+                foreach (var mp in match.MatchPlayers.ToList())
+                {
+                    _context.MatchPlayers.Remove(mp);
+                    await ReturnPlayerToWaitingQueueAsync(sessionId, mp.PlayerId);
+                }
+                _context.Matches.Remove(match);
+                return;
+            }
+
+            var team1Count = match.MatchPlayers.Count(mp => mp.TeamNumber == 1);
+            var team2Count = match.MatchPlayers.Count(mp => mp.TeamNumber == 2);
+            var teamNumber = team1Count <= team2Count ? 1 : 2;
+
+            _context.MatchPlayers.Add(new MatchPlayer { MatchId = match.MatchId, PlayerId = pick.PlayerId, TeamNumber = teamNumber });
+            pick.Status = "InMatch";
+            pick.Position = null;
+        }
+
+        // Mirrors MatchService's queue upsert: reuses the player's existing QueueEntry row
+        // (QueueEntry has a unique SessionId+PlayerId index) instead of risking a duplicate
+        // insert if they already have a non-"Waiting" row for this session.
+        private async Task ReturnPlayerToWaitingQueueAsync(int sessionId, int playerId)
+        {
+            var existing = await _context.QueueEntries
+                .FirstOrDefaultAsync(q => q.SessionId == sessionId && q.PlayerId == playerId);
+
+            if (existing != null)
+            {
+                existing.Status = "Waiting";
+                existing.CheckInTime = DateTime.UtcNow;
+                existing.Position = null;
+                return;
+            }
+
+            _context.QueueEntries.Add(new QueueEntry
+            {
+                SessionId = sessionId,
+                PlayerId = playerId,
+                Status = "Waiting",
+                CheckInTime = DateTime.UtcNow
+            });
         }
     }
 }

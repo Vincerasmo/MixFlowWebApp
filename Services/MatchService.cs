@@ -1,14 +1,18 @@
 ﻿using Microsoft.EntityFrameworkCore;
+using MixFlowWebApp.Constants;
 using MixFlowWebApp.Data;
-using MixFlowWebApp.DTOs.MatchDTOs;
 using MixFlowWebApp.Interfaces.Services;
 using MixFlowWebApp.Models;
-using System.Linq;
 
 namespace MixFlowWebApp.Services
 {
     public class MatchService : IMatchService
     {
+        // How many prepared-but-not-started matches the "next up" queue tries to keep
+        // ready at all times, so the organizer always has a couple of cards to review
+        // or edit before they hit a court.
+        private const int TargetReadyMatchCount = 2;
+
         private readonly MixFlowDbContext _context;
         private readonly ILeaderboardService _leaderboardService;
 
@@ -31,21 +35,12 @@ namespace MixFlowWebApp.Services
             if (sp == null)
                 throw new InvalidOperationException("Player is not checked into this session or is benched.");
 
-            var existing = await _context.QueueEntries
-                .FirstOrDefaultAsync(q => q.SessionId == sessionId && q.PlayerId == playerId && q.Status == "Waiting");
+            var alreadyInMatch = await _context.MatchPlayers
+                .AnyAsync(mp => mp.PlayerId == playerId && mp.Match.SessionId == sessionId && mp.Match.Status != MatchStatus.Completed);
+            if (alreadyInMatch)
+                throw new InvalidOperationException("Player is currently in a match.");
 
-            if (existing != null) return existing;
-
-            var entry = new QueueEntry
-            {
-                SessionId = sessionId,
-                PlayerId = playerId,
-                Status = "Waiting",
-                CheckInTime = DateTime.UtcNow
-            };
-
-            _context.QueueEntries.Add(entry);
-            return entry;
+            return await UpsertWaitingQueueEntryAsync(sessionId, playerId);
         }
 
         public async Task<List<QueueEntry>> GetCurrentQueueAsync(int sessionId)
@@ -94,33 +89,59 @@ namespace MixFlowWebApp.Services
             return true;
         }
 
-        // ---------------- Match Creation ----------------
-
-        public async Task<Match?> CreateNextSmartMixAsync(int sessionId, List<(int PlayerId, int PartnerId)> requestedPairs)
+        // Puts a player back into the "Waiting" queue, reusing their existing QueueEntry
+        // row if they already have one for this session instead of inserting a new row.
+        // QueueEntry has a unique (SessionId, PlayerId) index, so a naive insert-if-not-
+        // "Waiting" check (as this used to be) throws a DB conflict — and therefore a 500 —
+        // the moment a player who already has a non-"Waiting" row (e.g. "Removed" from a
+        // bench, or "InMatch" from a prior match) gets queued again.
+        private async Task<QueueEntry> UpsertWaitingQueueEntryAsync(int sessionId, int playerId)
         {
-            var match = await CreateSmartMixAsync(sessionId, requestedPairs);
-            if (match == null)
-                throw new InvalidOperationException("Not enough players in queue (need at least 4)");
+            var existing = await _context.QueueEntries
+                .Include(q => q.Player)
+                .FirstOrDefaultAsync(q => q.SessionId == sessionId && q.PlayerId == playerId);
 
-            return match;
+            if (existing != null)
+            {
+                existing.Status = "Waiting";
+                existing.CheckInTime = DateTime.UtcNow;
+                existing.Position = null;
+                return existing;
+            }
+
+            var entry = new QueueEntry
+            {
+                SessionId = sessionId,
+                PlayerId = playerId,
+                Status = "Waiting",
+                CheckInTime = DateTime.UtcNow
+            };
+
+            _context.QueueEntries.Add(entry);
+            await _context.SaveChangesAsync();
+
+            return await _context.QueueEntries
+                .Include(q => q.Player)
+                .FirstAsync(q => q.QueueId == entry.QueueId);
         }
+
+        // ---------------- Match Creation (randomized only) ----------------
 
         public async Task AutoFillCourtsFromQueueAsync(int sessionId)
         {
             var session = await _context.Sessions.FirstOrDefaultAsync(s => s.SessionId == sessionId);
             if (session == null || session.Status != "Active") return;
 
-            var active = await _context.Matches
-                .CountAsync(m => m.SessionId == sessionId && !m.IsCompleted);
-
-            var freeCourts = session.NumberOfCourts - active;
-            if (freeCourts <= 0) return;
-
-            await CreateMatchesForAllCourtsAsync(sessionId, freeCourts);
+            // Send whatever's already prepared to any free courts, top the next-up
+            // pool back up from the queue, then promote again in case the newly built
+            // matches can immediately cover courts that were still free.
+            await PromoteReadyMatchesToCourtsAsync(sessionId);
+            await EnsureReadyMatchesAsync(sessionId);
+            await PromoteReadyMatchesToCourtsAsync(sessionId);
         }
 
         // Fills exactly the requested court — never touches any other court, unlike
-        // AutoFillCourtsFromQueueAsync which greedily fills every free court it can.
+        // AutoFillCourtsFromQueueAsync which fills every free court it can.
         public async Task<Match?> CreateMatchForCourtAsync(int sessionId, int courtNumber)
         {
             var session = await _context.Sessions.FirstOrDefaultAsync(s => s.SessionId == sessionId);
@@ -131,10 +152,30 @@ namespace MixFlowWebApp.Services
                 throw new InvalidOperationException($"Court {courtNumber} is out of range for this session.");
 
             var courtOccupied = await _context.Matches
-                .AnyAsync(m => m.SessionId == sessionId && m.CourtNumber == courtNumber && !m.IsCompleted);
+                .AnyAsync(m => m.SessionId == sessionId && m.CourtNumber == courtNumber && m.Status == MatchStatus.Active);
             if (courtOccupied)
                 throw new InvalidOperationException($"Court {courtNumber} already has a match in progress.");
 
+            // Prefer a match that's already prepared and waiting in the next-up queue —
+            // send it straight to this court instead of building a brand new one.
+            var readyMatch = await _context.Matches
+                .Where(m => m.SessionId == sessionId && m.Status == MatchStatus.Ready)
+                .OrderBy(m => m.MatchId)
+                .FirstOrDefaultAsync();
+
+            if (readyMatch != null)
+            {
+                readyMatch.CourtNumber = courtNumber;
+                readyMatch.Status = MatchStatus.Active;
+                readyMatch.StartTime = DateTime.UtcNow;
+
+                await _context.SaveChangesAsync();
+                await EnsureReadyMatchesAsync(sessionId);
+
+                return readyMatch;
+            }
+
+            // Nothing prepared — build one directly for this court from the queue.
             await UpdateQueuePrioritiesAsync(sessionId);
 
             var queueEntries = await _context.QueueEntries
@@ -156,6 +197,7 @@ namespace MixFlowWebApp.Services
                 SessionId = sessionId,
                 CourtNumber = courtNumber,
                 RotationMode = "RandomMix",
+                Status = MatchStatus.Active,
                 StartTime = DateTime.UtcNow,
                 IsCompleted = false
             };
@@ -172,65 +214,253 @@ namespace MixFlowWebApp.Services
             }
 
             await _context.SaveChangesAsync();
+            await EnsureReadyMatchesAsync(sessionId);
+
             return match;
         }
 
-        // Smart Mix: organizer picks the exact 4 players (as 2 pairs) for a specific court.
-        // Every player must currently be Waiting in the queue — you can't pull someone
-        // who isn't actually queued.
-        public async Task<Match> CreateManualMatchForCourtAsync(int sessionId, int courtNumber, List<SmartMixPairDto> pairs)
+        // ---------------- Next Up (Ready) matches ----------------
+
+        public async Task<List<Match>> GetNextUpMatchesAsync(int sessionId)
         {
-            var session = await _context.Sessions.FirstOrDefaultAsync(s => s.SessionId == sessionId);
-            if (session == null || session.Status != "Active")
-                throw new InvalidOperationException("Session not found or not active.");
-
-            if (courtNumber < 1 || courtNumber > session.NumberOfCourts)
-                throw new InvalidOperationException($"Court {courtNumber} is out of range for this session.");
-
-            var courtOccupied = await _context.Matches
-                .AnyAsync(m => m.SessionId == sessionId && m.CourtNumber == courtNumber && !m.IsCompleted);
-            if (courtOccupied)
-                throw new InvalidOperationException($"Court {courtNumber} already has a match in progress.");
-
-            if (pairs.Count != 2)
-                throw new InvalidOperationException("Provide exactly 2 pairs (4 players) to fill a court.");
-
-            var playerIds = pairs.SelectMany(p => new[] { p.PlayerId, p.PartnerId }).ToList();
-            if (playerIds.Distinct().Count() != 4)
-                throw new InvalidOperationException("All 4 players must be different.");
-
-            var queueEntries = await _context.QueueEntries
-                .Where(q => q.SessionId == sessionId && q.Status == "Waiting" && playerIds.Contains(q.PlayerId))
+            return await _context.Matches
+                .Where(m => m.SessionId == sessionId && m.Status == MatchStatus.Ready)
+                .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
+                .OrderBy(m => m.MatchId)
                 .ToListAsync();
+        }
 
-            if (queueEntries.Count != 4)
-                throw new InvalidOperationException("All 4 selected players must currently be waiting in the queue.");
+        public async Task<Match> SwapMatchTeamsAsync(int sessionId, int matchId, int playerAId, int playerBId)
+        {
+            if (playerAId == playerBId)
+                throw new InvalidOperationException("Choose two different players to swap.");
 
-            var match = new Match
-            {
-                SessionId = sessionId,
-                CourtNumber = courtNumber,
-                RotationMode = "ManualMix",
-                StartTime = DateTime.UtcNow,
-                IsCompleted = false
-            };
+            var match = await _context.Matches
+                .Include(m => m.MatchPlayers)
+                .FirstOrDefaultAsync(m => m.MatchId == matchId && m.SessionId == sessionId);
 
-            _context.Matches.Add(match);
+            if (match == null)
+                throw new InvalidOperationException("Match not found.");
+            if (match.Status != MatchStatus.Ready)
+                throw new InvalidOperationException("Only an upcoming (not yet started) match can be edited.");
+
+            var mpA = match.MatchPlayers.FirstOrDefault(mp => mp.PlayerId == playerAId);
+            var mpB = match.MatchPlayers.FirstOrDefault(mp => mp.PlayerId == playerBId);
+
+            if (mpA == null || mpB == null)
+                throw new InvalidOperationException("Both players must currently be in this match.");
+            if (mpA.TeamNumber == mpB.TeamNumber)
+                throw new InvalidOperationException("Those two players are already on the same team.");
+
+            (mpA.TeamNumber, mpB.TeamNumber) = (mpB.TeamNumber, mpA.TeamNumber);
+
             await _context.SaveChangesAsync();
 
-            _context.MatchPlayers.Add(new MatchPlayer { MatchId = match.MatchId, PlayerId = pairs[0].PlayerId, TeamNumber = 1 });
-            _context.MatchPlayers.Add(new MatchPlayer { MatchId = match.MatchId, PlayerId = pairs[0].PartnerId, TeamNumber = 1 });
-            _context.MatchPlayers.Add(new MatchPlayer { MatchId = match.MatchId, PlayerId = pairs[1].PlayerId, TeamNumber = 2 });
-            _context.MatchPlayers.Add(new MatchPlayer { MatchId = match.MatchId, PlayerId = pairs[1].PartnerId, TeamNumber = 2 });
+            return await _context.Matches
+                .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
+                .FirstAsync(m => m.MatchId == match.MatchId);
+        }
 
-            foreach (var entry in queueEntries)
+        public async Task<Match> SwapMatchWithQueueAsync(int sessionId, int matchId, int playerOutId, int playerInId)
+        {
+            if (playerOutId == playerInId)
+                throw new InvalidOperationException("Choose two different players to swap.");
+
+            var match = await _context.Matches
+                .Include(m => m.MatchPlayers)
+                .FirstOrDefaultAsync(m => m.MatchId == matchId && m.SessionId == sessionId);
+
+            if (match == null)
+                throw new InvalidOperationException("Match not found.");
+            if (match.Status != MatchStatus.Ready)
+                throw new InvalidOperationException("Only an upcoming (not yet started) match can be edited.");
+
+            var outgoing = match.MatchPlayers.FirstOrDefault(mp => mp.PlayerId == playerOutId);
+            if (outgoing == null)
+                throw new InvalidOperationException("That player isn't currently in this match.");
+
+            if (match.MatchPlayers.Any(mp => mp.PlayerId == playerInId))
+                throw new InvalidOperationException("That player is already in this match.");
+
+            var incomingQueueEntry = await _context.QueueEntries
+                .FirstOrDefaultAsync(q => q.SessionId == sessionId && q.PlayerId == playerInId && q.Status == "Waiting");
+            if (incomingQueueEntry == null)
+                throw new InvalidOperationException("That player isn't currently waiting in the queue.");
+
+            var teamNumber = outgoing.TeamNumber;
+
+            _context.MatchPlayers.Remove(outgoing);
+            _context.MatchPlayers.Add(new MatchPlayer { MatchId = match.MatchId, PlayerId = playerInId, TeamNumber = teamNumber });
+
+            incomingQueueEntry.Status = "InMatch";
+            incomingQueueEntry.Position = null;
+
+            await UpsertWaitingQueueEntryAsync(sessionId, playerOutId);
+
+            await _context.SaveChangesAsync();
+
+            return await _context.Matches
+                .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
+                .FirstAsync(m => m.MatchId == match.MatchId);
+        }
+
+        // Builds up to TargetReadyMatchCount "Ready" matches from the queue (no court
+        // assigned yet). Safe to call any time — it only tops the pool up, never removes
+        // from it.
+        private async Task EnsureReadyMatchesAsync(int sessionId)
+        {
+            var readyCount = await _context.Matches
+                .CountAsync(m => m.SessionId == sessionId && m.Status == MatchStatus.Ready);
+
+            if (readyCount >= TargetReadyMatchCount) return;
+
+            await UpdateQueuePrioritiesAsync(sessionId);
+
+            var queueEntries = await _context.QueueEntries
+                .Where(q => q.SessionId == sessionId && q.Status == "Waiting")
+                .Include(q => q.Player)
+                .OrderByDescending(q => q.PriorityScore)
+                .ThenBy(q => q.CheckInTime)
+                .ToListAsync();
+
+            var lockedPartnerByPlayerId = await _context.SessionPlayers
+                .Where(sp => sp.SessionId == sessionId && sp.LockedPartnerId != null)
+                .ToDictionaryAsync(sp => sp.PlayerId, sp => sp.LockedPartnerId!.Value);
+
+            var remainingQueue = new List<QueueEntry>(queueEntries);
+
+            while (readyCount < TargetReadyMatchCount)
             {
-                entry.Status = "InMatch";
-                entry.Position = null;
+                var selectedPlayers = PickFourForNextCourt(remainingQueue, lockedPartnerByPlayerId);
+                if (selectedPlayers.Count < 4) break;
+
+                var match = new Match
+                {
+                    SessionId = sessionId,
+                    CourtNumber = null,
+                    RotationMode = "RandomMix",
+                    Status = MatchStatus.Ready,
+                    IsCompleted = false
+                };
+
+                _context.Matches.Add(match);
+                await _context.SaveChangesAsync();
+
+                AssignTeams(match, selectedPlayers, lockedPartnerByPlayerId);
+
+                foreach (var entry in remainingQueue.Where(q => selectedPlayers.Any(p => p.PlayerId == q.PlayerId)))
+                {
+                    entry.Status = "InMatch";
+                    entry.Position = null;
+                }
+
+                remainingQueue.RemoveAll(q => selectedPlayers.Any(p => p.PlayerId == q.PlayerId));
+                readyCount++;
             }
 
             await _context.SaveChangesAsync();
-            return match;
+        }
+
+        // Assigns any prepared "Ready" matches to free courts, oldest-first.
+        private async Task PromoteReadyMatchesToCourtsAsync(int sessionId)
+        {
+            var session = await _context.Sessions.FirstOrDefaultAsync(s => s.SessionId == sessionId);
+            if (session == null || session.Status != "Active") return;
+
+            var occupiedCourts = await _context.Matches
+                .Where(m => m.SessionId == sessionId && m.Status == MatchStatus.Active && m.CourtNumber.HasValue)
+                .Select(m => m.CourtNumber!.Value)
+                .ToListAsync();
+
+            var freeCourts = Enumerable.Range(1, session.NumberOfCourts)
+                .Where(c => !occupiedCourts.Contains(c))
+                .ToList();
+
+            if (freeCourts.Count == 0) return;
+
+            var readyMatches = await _context.Matches
+                .Where(m => m.SessionId == sessionId && m.Status == MatchStatus.Ready)
+                .OrderBy(m => m.MatchId)
+                .ToListAsync();
+
+            var readyQueue = new Queue<Match>(readyMatches);
+
+            foreach (var court in freeCourts)
+            {
+                if (readyQueue.Count == 0) break;
+
+                var next = readyQueue.Dequeue();
+                next.CourtNumber = court;
+                next.Status = MatchStatus.Active;
+                next.StartTime = DateTime.UtcNow;
+            }
+
+            await _context.SaveChangesAsync();
+        }
+
+        // Shared by EnsureReadyMatchesAsync and CreateMatchForCourtAsync so team
+        // assignment (including keeping locked pairs together) only lives in one place.
+        private void AssignTeams(Match match, List<Player> selectedPlayers, Dictionary<int, int> lockedPartnerByPlayerId)
+        {
+            var team1 = new List<Player>();
+            var team2 = new List<Player>();
+            foreach (var p in selectedPlayers)
+            {
+                var target = team1.Count <= team2.Count ? team1 : team2;
+                if (lockedPartnerByPlayerId.TryGetValue(p.PlayerId, out var partnerId)
+                    && selectedPlayers.Any(sp => sp.PlayerId == partnerId))
+                {
+                    target = team1.Count < 2 ? team1 : team2;
+                }
+                target.Add(p);
+            }
+
+            foreach (var p in team1)
+                _context.MatchPlayers.Add(new MatchPlayer { MatchId = match.MatchId, PlayerId = p.PlayerId, TeamNumber = 1 });
+            foreach (var p in team2)
+                _context.MatchPlayers.Add(new MatchPlayer { MatchId = match.MatchId, PlayerId = p.PlayerId, TeamNumber = 2 });
+        }
+
+        private List<Player> PickFourForNextCourt(List<QueueEntry> remainingQueue, Dictionary<int, int> lockedPartnerByPlayerId)
+        {
+            var selected = new List<Player>();
+            var selectedIds = new HashSet<int>();
+            var queuedPlayerIds = remainingQueue.Select(q => q.PlayerId).ToHashSet();
+            var consideredPairs = new HashSet<int>();
+
+            // Pass 1: pull in any complete locked pair first, wherever it sits in the queue.
+            foreach (var entry in remainingQueue)
+            {
+                if (selected.Count >= 4) break;
+                if (selectedIds.Contains(entry.PlayerId) || consideredPairs.Contains(entry.PlayerId)) continue;
+
+                if (lockedPartnerByPlayerId.TryGetValue(entry.PlayerId, out var partnerId) && queuedPlayerIds.Contains(partnerId))
+                {
+                    consideredPairs.Add(entry.PlayerId);
+                    consideredPairs.Add(partnerId);
+
+                    if (selected.Count <= 2)
+                    {
+                        var partnerEntry = remainingQueue.First(q => q.PlayerId == partnerId);
+                        selected.Add(entry.Player);
+                        selected.Add(partnerEntry.Player);
+                        selectedIds.Add(entry.PlayerId);
+                        selectedIds.Add(partnerId);
+                    }
+                }
+            }
+
+            // Pass 2: fill any remaining slots with whoever's next in normal queue order.
+            foreach (var entry in remainingQueue)
+            {
+                if (selected.Count >= 4) break;
+                if (selectedIds.Contains(entry.PlayerId)) continue;
+
+                selected.Add(entry.Player);
+                selectedIds.Add(entry.PlayerId);
+            }
+
+            return selected;
         }
 
         // ---------------- Match Results ----------------
@@ -241,16 +471,15 @@ namespace MixFlowWebApp.Services
                 .Include(m => m.MatchPlayers)
                 .FirstOrDefaultAsync(m => m.SessionId == sessionId
                                && m.CourtNumber == courtNumber
-                               && !m.IsCompleted);
+                               && m.Status == MatchStatus.Active);
 
             if (match == null)
                 throw new InvalidOperationException("Active match not found.");
-            if (match.IsCompleted)
-                throw new InvalidOperationException("Match already completed.");
 
             match.Team1Score = team1Score;
             match.Team2Score = team2Score;
             match.IsCompleted = true;
+            match.Status = MatchStatus.Completed;
             match.EndTime = DateTime.UtcNow;
 
             _context.MatchPlayers.RemoveRange(match.MatchPlayers);
@@ -296,26 +525,10 @@ namespace MixFlowWebApp.Services
         {
             foreach (var pid in playerIds)
             {
-                var existing = await _context.QueueEntries
-                    .FirstOrDefaultAsync(q => q.SessionId == sessionId && q.PlayerId == pid);
-
-                if (existing == null)
-                {
-                    _context.QueueEntries.Add(new QueueEntry
-                    {
-                        SessionId = sessionId,
-                        PlayerId = pid,
-                        Status = "Waiting",
-                        CheckInTime = DateTime.UtcNow
-                    });
-                }
-                else
-                {
-                    existing.Status = "Waiting";
-                    existing.CheckInTime = DateTime.UtcNow;
-                    existing.Position = null;
-                }
+                await UpsertWaitingQueueEntryAsync(sessionId, pid);
             }
+
+            await _context.SaveChangesAsync();
 
             await UpdateQueuePrioritiesAsync(sessionId);
             await AutoFillCourtsFromQueueAsync(sessionId);
@@ -389,7 +602,7 @@ namespace MixFlowWebApp.Services
         public async Task<List<Match>> GetActiveMatchesAsync(int sessionId)
         {
             return await _context.Matches
-                .Where(m => m.SessionId == sessionId && !m.IsCompleted)
+                .Where(m => m.SessionId == sessionId && m.Status == MatchStatus.Active)
                 .Include(m => m.MatchPlayers)
                     .ThenInclude(mp => mp.Player)
                 .OrderBy(m => m.StartTime)
@@ -397,194 +610,6 @@ namespace MixFlowWebApp.Services
         }
 
         // ---------------- Helpers ----------------
-
-        private async Task<int> GetNextCourtNumberAsync(int sessionId)
-        {
-            var existingCourts = await _context.Matches
-                .Where(m => m.SessionId == sessionId && !m.IsCompleted && m.CourtNumber.HasValue)
-                .Select(m => m.CourtNumber!.Value)
-                .ToListAsync();
-
-            int court = 1;
-            while (existingCourts.Contains(court)) court++;
-            return court;
-        }
-
-        private async Task<Match?> CreateSmartMixAsync(int sessionId, List<(int PlayerId, int PartnerId)> requestedPairs)
-        {
-            await UpdateQueuePrioritiesAsync(sessionId);
-
-            var queueEntries = await _context.QueueEntries
-                .Where(q => q.SessionId == sessionId && q.Status == "Waiting")
-                .Include(q => q.Player)
-                .OrderByDescending(q => q.PriorityScore)
-                .ThenBy(q => q.CheckInTime)
-                .ToListAsync();
-
-            if (queueEntries.Count < 4) return null;
-
-            var session = await _context.Sessions.FindAsync(sessionId);
-            var nextCourt = await GetNextCourtNumberAsync(sessionId);
-
-            var match = new Match
-            {
-                SessionId = sessionId,
-                CourtNumber = nextCourt,
-                RotationMode = "SmartMix",
-                StartTime = DateTime.UtcNow,
-                IsCompleted = false
-            };
-
-            _context.Matches.Add(match);
-            await _context.SaveChangesAsync();
-
-            foreach (var pair in requestedPairs)
-            {
-                _context.MatchPlayers.Add(new MatchPlayer
-                {
-                    MatchId = match.MatchId,
-                    PlayerId = pair.PlayerId,
-                    TeamNumber = 1
-                });
-                _context.MatchPlayers.Add(new MatchPlayer
-                {
-                    MatchId = match.MatchId,
-                    PlayerId = pair.PartnerId,
-                    TeamNumber = 1
-                });
-            }
-
-            var usedIds = requestedPairs.SelectMany(p => new[] { p.PlayerId, p.PartnerId }).ToHashSet();
-            var remainingPlayers = queueEntries.Select(q => q.Player).Where(p => !usedIds.Contains(p.PlayerId)).ToList();
-
-            var random = new Random();
-            var shuffled = remainingPlayers.OrderBy(_ => random.Next()).Take(2).ToList();
-
-            for (int i = 0; i < shuffled.Count; i++)
-            {
-                _context.MatchPlayers.Add(new MatchPlayer
-                {
-                    MatchId = match.MatchId,
-                    PlayerId = shuffled[i].PlayerId,
-                    TeamNumber = 2
-                });
-            }
-
-            foreach (var entry in queueEntries.Where(q => requestedPairs.Any(r => r.PlayerId == q.PlayerId || r.PartnerId == q.PlayerId) || shuffled.Any(p => p.PlayerId == q.PlayerId)))
-            {
-                entry.Status = "InMatch";
-                entry.Position = null;
-            }
-
-            await _context.SaveChangesAsync();
-            return match;
-        }
-
-        private async Task<List<Match>> CreateMatchesForAllCourtsAsync(int sessionId, int freeCourts)
-        {
-            await UpdateQueuePrioritiesAsync(sessionId);
-
-            var queueEntries = await _context.QueueEntries
-                .Where(q => q.SessionId == sessionId && q.Status == "Waiting")
-                .Include(q => q.Player)
-                .OrderByDescending(q => q.PriorityScore)
-                .ThenBy(q => q.CheckInTime)
-                .ToListAsync();
-
-            var courtsToFill = Math.Min(freeCourts, queueEntries.Count / 4);
-            if (courtsToFill <= 0) return new List<Match>();
-
-            var lockedPartnerByPlayerId = await _context.SessionPlayers
-                .Where(sp => sp.SessionId == sessionId && sp.LockedPartnerId != null)
-                .ToDictionaryAsync(sp => sp.PlayerId, sp => sp.LockedPartnerId!.Value);
-
-            var remainingQueue = new List<QueueEntry>(queueEntries);
-            var createdMatches = new List<Match>();
-
-            for (int i = 0; i < courtsToFill; i++)
-            {
-                var selectedPlayers = PickFourForNextCourt(remainingQueue, lockedPartnerByPlayerId);
-                if (selectedPlayers.Count < 4) break;
-
-                var nextCourt = await GetNextCourtNumberAsync(sessionId);
-
-                var match = new Match
-                {
-                    SessionId = sessionId,
-                    CourtNumber = nextCourt,
-                    RotationMode = "RandomMix",
-                    StartTime = DateTime.UtcNow,
-                    IsCompleted = false
-                };
-
-                _context.Matches.Add(match);
-                await _context.SaveChangesAsync();
-
-                AssignTeams(match, selectedPlayers, lockedPartnerByPlayerId);
-
-                foreach (var entry in remainingQueue.Where(q => selectedPlayers.Any(p => p.PlayerId == q.PlayerId)))
-                {
-                    entry.Status = "InMatch";
-                    entry.Position = null;
-                }
-
-                remainingQueue.RemoveAll(q => selectedPlayers.Any(p => p.PlayerId == q.PlayerId));
-                createdMatches.Add(match);
-            }
-
-            await _context.SaveChangesAsync();
-            return createdMatches;
-        }
-
-        // Shared by CreateMatchesForAllCourtsAsync and CreateMatchForCourtAsync so team
-        // assignment (including keeping locked pairs together) only lives in one place.
-        private void AssignTeams(Match match, List<Player> selectedPlayers, Dictionary<int, int> lockedPartnerByPlayerId)
-        {
-            var team1 = new List<Player>();
-            var team2 = new List<Player>();
-            foreach (var p in selectedPlayers)
-            {
-                var target = team1.Count <= team2.Count ? team1 : team2;
-                if (lockedPartnerByPlayerId.TryGetValue(p.PlayerId, out var partnerId)
-                    && selectedPlayers.Any(sp => sp.PlayerId == partnerId))
-                {
-                    target = team1.Count < 2 ? team1 : team2;
-                }
-                target.Add(p);
-            }
-
-            foreach (var p in team1)
-                _context.MatchPlayers.Add(new MatchPlayer { MatchId = match.MatchId, PlayerId = p.PlayerId, TeamNumber = 1 });
-            foreach (var p in team2)
-                _context.MatchPlayers.Add(new MatchPlayer { MatchId = match.MatchId, PlayerId = p.PlayerId, TeamNumber = 2 });
-        }
-
-        private List<Player> PickFourForNextCourt(List<QueueEntry> remainingQueue, Dictionary<int, int> lockedPartnerByPlayerId)
-        {
-            var selected = new List<Player>();
-            var selectedIds = new HashSet<int>();
-
-            foreach (var entry in remainingQueue)
-            {
-                if (selected.Count >= 4) break;
-                if (selectedIds.Contains(entry.PlayerId)) continue;
-
-                selected.Add(entry.Player);
-                selectedIds.Add(entry.PlayerId);
-
-                if (lockedPartnerByPlayerId.TryGetValue(entry.PlayerId, out var partnerId) && !selectedIds.Contains(partnerId))
-                {
-                    var partnerEntry = remainingQueue.FirstOrDefault(q => q.PlayerId == partnerId);
-                    if (partnerEntry != null && selected.Count < 4)
-                    {
-                        selected.Add(partnerEntry.Player);
-                        selectedIds.Add(partnerId);
-                    }
-                }
-            }
-
-            return selected;
-        }
 
         private decimal CalculatePriority(QueueEntry entry)
         {

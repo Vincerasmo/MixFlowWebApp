@@ -5,6 +5,7 @@
         public int MatchId { get; set; }
         public int SessionId { get; set; }
         public int? CourtNumber { get; set; }
+        public string Status { get; set; } = string.Empty;
         public string RotationMode { get; set; } = string.Empty;
         public List<MatchPlayerDto> Team1 { get; set; } = new();
         public List<MatchPlayerDto> Team2 { get; set; } = new();

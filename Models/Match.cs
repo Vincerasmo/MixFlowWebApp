@@ -1,4 +1,6 @@
-﻿namespace MixFlowWebApp.Models
+﻿using MixFlowWebApp.Constants;
+
+namespace MixFlowWebApp.Models
 {
     public class Match
     {
@@ -9,6 +11,10 @@
         public DateTime? EndTime { get; set; }
         public string MatchType { get; set; } = "Doubles";
         public string? RotationMode { get; set; }
+
+        // See Constants.MatchStatus for the lifecycle this drives (Ready -> Active -> Completed).
+        public string Status { get; set; } = MatchStatus.Ready;
+
         public int? Team1Score { get; set; }
         public int? Team2Score { get; set; }
         public bool IsCompleted { get; set; } = false;
