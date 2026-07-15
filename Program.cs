@@ -105,7 +105,7 @@ builder.Services.AddCors(options =>
         var allowedOrigins = new List<string>
         {
             "http://localhost:5173",
-            "http://mixflow.runasp.net"
+            "https://mix-flow-front-end.vercel.app"
         };
 
         policy.WithOrigins(allowedOrigins.ToArray())

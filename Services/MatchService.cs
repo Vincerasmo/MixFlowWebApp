@@ -241,8 +241,8 @@ namespace MixFlowWebApp.Services
 
             if (match == null)
                 throw new InvalidOperationException("Match not found.");
-            if (match.Status != MatchStatus.Ready)
-                throw new InvalidOperationException("Only an upcoming (not yet started) match can be edited.");
+            if (match.Status == MatchStatus.Completed)
+                throw new InvalidOperationException("A completed match can't be edited.");
 
             var mpA = match.MatchPlayers.FirstOrDefault(mp => mp.PlayerId == playerAId);
             var mpB = match.MatchPlayers.FirstOrDefault(mp => mp.PlayerId == playerBId);
@@ -251,6 +251,13 @@ namespace MixFlowWebApp.Services
                 throw new InvalidOperationException("Both players must currently be in this match.");
             if (mpA.TeamNumber == mpB.TeamNumber)
                 throw new InvalidOperationException("Those two players are already on the same team.");
+
+            // Locking is symmetric (both sides point at each other), so checking one
+            // direction is enough.
+            var lockedToEachOther = await _context.SessionPlayers
+                .AnyAsync(sp => sp.SessionId == sessionId && sp.PlayerId == playerAId && sp.LockedPartnerId == playerBId);
+            if (lockedToEachOther)
+                throw new InvalidOperationException("These two players are locked as partners — unlock them first if you want to split them onto opposite teams.");
 
             (mpA.TeamNumber, mpB.TeamNumber) = (mpB.TeamNumber, mpA.TeamNumber);
 
@@ -272,8 +279,8 @@ namespace MixFlowWebApp.Services
 
             if (match == null)
                 throw new InvalidOperationException("Match not found.");
-            if (match.Status != MatchStatus.Ready)
-                throw new InvalidOperationException("Only an upcoming (not yet started) match can be edited.");
+            if (match.Status == MatchStatus.Completed)
+                throw new InvalidOperationException("A completed match can't be edited.");
 
             var outgoing = match.MatchPlayers.FirstOrDefault(mp => mp.PlayerId == playerOutId);
             if (outgoing == null)

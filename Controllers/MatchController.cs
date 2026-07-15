@@ -197,7 +197,10 @@ namespace MixFlowWebApp.Controllers
             return Ok(_mapper.Map<List<MatchDto>>(matches));
         }
 
-        // 8.6) Edit a next-up match: swap two of its players between Team 1 and Team 2.
+        // 8.6) Edit a match's teams: swap two players between Team 1 and Team 2. Works on
+        // a next-up match or the match currently on a court (not a completed one). Route
+        // kept as "next-up/..." for frontend compatibility even though it now also
+        // applies to in-progress matches.
         [HttpPut("next-up/{matchId}/swap-teams")]
         public async Task<ActionResult<MatchDto>> SwapNextUpMatchTeams(int sessionId, int matchId, [FromBody] SwapMatchTeamsDto dto)
         {
@@ -217,8 +220,9 @@ namespace MixFlowWebApp.Controllers
             }
         }
 
-        // 8.7) Edit a next-up match: swap one of its players out for a player currently
-        // waiting in the queue. The bumped player goes back to the queue.
+        // 8.7) Edit a match: swap one of its players out for a player currently waiting in
+        // the queue. The bumped player goes back to the queue. Works on a next-up match or
+        // the match currently on a court (not a completed one).
         [HttpPut("next-up/{matchId}/swap-with-queue")]
         public async Task<ActionResult<MatchDto>> SwapNextUpMatchWithQueue(int sessionId, int matchId, [FromBody] SwapWithQueueDto dto)
         {

@@ -27,10 +27,14 @@ namespace MixFlowWebApp.Interfaces.Services
         // The prepared, not-yet-started matches waiting for a free court (target: 2).
         Task<List<Match>> GetNextUpMatchesAsync(int sessionId);
 
-        // Swap two players' team assignments within the same next-up match.
+        // ---------------- Editing a match (next-up OR currently in progress) ----------------
+
+        // Swap two players' team assignments within the same match. Works on a next-up
+        // match or one currently being played on a court; not on a completed one.
         Task<Match> SwapMatchTeamsAsync(int sessionId, int matchId, int playerAId, int playerBId);
 
-        // Swap a player out of a next-up match for a player currently waiting in the queue.
+        // Swap a player out of a match for a player currently waiting in the queue. Works
+        // on a next-up match or one currently being played on a court; not on a completed one.
         Task<Match> SwapMatchWithQueueAsync(int sessionId, int matchId, int playerOutId, int playerInId);
 
         // ---------------- Match Results ----------------
