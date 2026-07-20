@@ -52,6 +52,7 @@ Controllers/Auth/AuthController.cs
 Controllers/LeaderboardController.cs
 Controllers/MatchController.cs
 Controllers/PlayerController.cs
+Controllers/PublicController.cs
 Controllers/SessionController.cs
 Data/MixFlowDbContext.cs
 DTOs/AuthDTOs/AuthResponseDto.cs
@@ -121,6 +122,103 @@ Services/SessionService.cs
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path="Controllers/PublicController.cs">
+using AutoMapper;
+using Microsoft.AspNetCore.Mvc;
+using MixFlowWebApp.DTOs.LeaderboardDTOs;
+using MixFlowWebApp.DTOs.MatchDTOs;
+using MixFlowWebApp.DTOs.QueueEntryDTOs;
+using MixFlowWebApp.Interfaces.Services;
+
+namespace MixFlowWebApp.Controllers
+{
+    // No [Authorize] anywhere in this controller — every action here is intentionally
+    // public and read-only, for the spectator "watch" link players open with no login
+    // (see WatchPage.tsx / /watch/:sessionId on the frontend). Never add a write action
+    // to this controller; if it needs a POST/PUT/DELETE, it belongs in an authenticated
+    // controller instead.
+    [ApiController]
+    [Route("api/public/sessions")]
+    public class PublicController : ControllerBase
+    {
+        private readonly ISessionService _sessionService;
+        private readonly IMatchService _matchService;
+        private readonly ILeaderboardService _leaderboardService;
+        private readonly IMapper _mapper;
+
+        public PublicController(
+            ISessionService sessionService,
+            IMatchService matchService,
+            ILeaderboardService leaderboardService,
+            IMapper mapper)
+        {
+            _sessionService = sessionService;
+            _matchService = matchService;
+            _leaderboardService = leaderboardService;
+            _mapper = mapper;
+        }
+
+        // Deliberately NOT mapping the full SessionDto here — only the fields a spectator
+        // actually needs. SessionDto may carry organizer-facing fields over time that
+        // shouldn't be exposed on a link anyone can open without logging in.
+        [HttpGet("{sessionId}")]
+        public async Task<ActionResult> GetSession(int sessionId)
+        {
+            var session = await _sessionService.GetSessionByIdAsync(sessionId);
+            if (session == null) return NotFound(new { error = "Session not found." });
+
+            return Ok(new
+            {
+                sessionId = session.SessionId,
+                sessionName = session.SessionName,
+                numberOfCourts = session.NumberOfCourts,
+                status = session.Status
+            });
+        }
+
+        [HttpGet("{sessionId}/queue")]
+        public async Task<ActionResult<List<QueueEntryDto>>> GetQueue(int sessionId)
+        {
+            var session = await _sessionService.GetSessionByIdAsync(sessionId);
+            if (session == null) return NotFound(new { error = "Session not found." });
+
+            var queue = await _matchService.GetCurrentQueueAsync(sessionId);
+            return Ok(_mapper.Map<List<QueueEntryDto>>(queue));
+        }
+
+        [HttpGet("{sessionId}/matches/active")]
+        public async Task<ActionResult<List<MatchDto>>> GetActiveMatches(int sessionId)
+        {
+            var session = await _sessionService.GetSessionByIdAsync(sessionId);
+            if (session == null) return NotFound(new { error = "Session not found." });
+
+            var matches = await _matchService.GetActiveMatchesAsync(sessionId);
+            return Ok(_mapper.Map<List<MatchDto>>(matches));
+        }
+
+        [HttpGet("{sessionId}/matches/completed")]
+        public async Task<ActionResult<List<MatchDto>>> GetCompletedMatches(int sessionId)
+        {
+            var session = await _sessionService.GetSessionByIdAsync(sessionId);
+            if (session == null) return NotFound(new { error = "Session not found." });
+
+            var matches = await _matchService.GetSessionMatchesAsync(sessionId);
+            return Ok(_mapper.Map<List<MatchDto>>(matches));
+        }
+
+        [HttpGet("{sessionId}/leaderboard")]
+        public async Task<ActionResult<List<LeaderboardPlayerDto>>> GetLeaderboard(int sessionId)
+        {
+            var session = await _sessionService.GetSessionByIdAsync(sessionId);
+            if (session == null) return NotFound(new { error = "Session not found." });
+
+            var leaderboard = await _leaderboardService.GetSessionLeaderboardAsync(sessionId);
+            return Ok(leaderboard);
+        }
+    }
+}
+</file>
 
 <file path=".config/dotnet-tools.json">
 {
@@ -5024,11 +5122,17 @@ namespace MixFlowWebApp.Controllers
         {
             if (sessionId <= 0 || playerId <= 0) return BadRequest(new { error = "Invalid session ID or player ID" });
 
-            var sessionPlayer = await _sessionPlayerService.AddPlayerToSessionAsync(sessionId, playerId);
-            if (sessionPlayer == null) return NotFound(new { error = "Session or player not found" });
+            try
+            {
+                var sessionPlayer = await _sessionPlayerService.AddPlayerToSessionAsync(sessionId, playerId);
+                if (sessionPlayer == null) return NotFound(new { error = "Session or player not found" });
 
-            _logger.LogInformation("Player {PlayerId} added to Session {SessionId}", playerId, sessionId);
-            return CreatedAtAction(nameof(GetSessionPlayers), new { sessionId }, _mapper.Map<SessionPlayerDto>(sessionPlayer));
+                return CreatedAtAction(nameof(GetSessionPlayers), new { sessionId }, _mapper.Map<SessionPlayerDto>(sessionPlayer));
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Conflict(new { error = ex.Message });
+            }
         }
 
         /// Returns session players enriched with games-played-in-this-session and
@@ -5835,381 +5939,6 @@ namespace MixFlowWebApp.Services
 }
 </file>
 
-<file path="Controllers/MatchController.cs">
-using AutoMapper;
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using MixFlowWebApp.Data;
-using MixFlowWebApp.DTOs.MatchDTOs;
-using MixFlowWebApp.DTOs.QueueEntryDTOs;
-using MixFlowWebApp.DTOs.SessionPlayerDTOs;
-using MixFlowWebApp.Interfaces.Services;
-
-namespace MixFlowWebApp.Controllers
-{
-    [ApiController]
-    [Route("api/matches")]
-    [Authorize]
-    public class MatchController : ControllerBase
-    {
-        private readonly IMatchService _matchService;
-        private readonly ISessionPlayerService _sessionPlayerService;
-        private readonly IMapper _mapper;
-        private readonly ILogger<MatchController> _logger;
-        private readonly MixFlowDbContext _context;
-
-        public MatchController(
-            IMatchService matchService,
-            ISessionPlayerService sessionPlayerService,
-            IMapper mapper,
-            ILogger<MatchController> logger,
-            MixFlowDbContext context)
-        {
-            _matchService = matchService;
-            _sessionPlayerService = sessionPlayerService;
-            _mapper = mapper;
-            _logger = logger;
-            _context = context;
-        }
-
-        // 1) Enqueue player
-        [HttpPost("enqueue/{playerId}")]
-        public async Task<ActionResult<QueueEntryDto>> EnqueuePlayer(int sessionId, int playerId)
-        {
-            using var transaction = await _context.Database.BeginTransactionAsync();
-            try
-            {
-                var entry = await _matchService.EnqueuePlayerAsync(sessionId, playerId);
-                await _context.SaveChangesAsync();
-                await transaction.CommitAsync();
-
-                return Ok(_mapper.Map<QueueEntryDto>(entry));
-            }
-            catch (InvalidOperationException ex)
-            {
-                await transaction.RollbackAsync();
-                _logger.LogWarning(ex, "Failed to enqueue player {PlayerId} for session {SessionId}", playerId, sessionId);
-                return BadRequest(new { error = ex.Message });
-            }
-        }
-
-        // 2) View queue
-        [HttpGet("queue")]
-        public async Task<ActionResult<List<QueueEntryDto>>> GetQueue(int sessionId)
-        {
-            var items = await _matchService.GetCurrentQueueAsync(sessionId);
-            return Ok(_mapper.Map<List<QueueEntryDto>>(items));
-        }
-
-        // 3) Auto-match: promote next-up matches to free courts and top the next-up
-        // queue back up to 2 prepared matches.
-        [HttpPost("auto-match")]
-        public async Task<IActionResult> AutoMatch(int sessionId)
-        {
-            using var transaction = await _context.Database.BeginTransactionAsync();
-            try
-            {
-                await _matchService.AutoFillCourtsFromQueueAsync(sessionId);
-                await _context.SaveChangesAsync();
-                await transaction.CommitAsync();
-
-                return Ok(new { message = "Auto-matching triggered." });
-            }
-            catch (Exception ex)
-            {
-                await transaction.RollbackAsync();
-                return BadRequest(new { error = ex.Message });
-            }
-        }
-
-        // 4) Fill exactly one specific court from the queue — unlike auto-match, this
-        // never touches any other court, even if several are free at once. Promotes an
-        // already-prepared next-up match if one exists, otherwise builds a fresh one.
-        [HttpPost("court/{courtNumber}/smart-mix")]
-        public async Task<ActionResult<MatchDto>> SmartMixCourt(int sessionId, int courtNumber)
-        {
-            using var transaction = await _context.Database.BeginTransactionAsync();
-            try
-            {
-                var match = await _matchService.CreateMatchForCourtAsync(sessionId, courtNumber);
-                if (match == null)
-                {
-                    await transaction.RollbackAsync();
-                    return BadRequest(new { error = "Not enough players in the queue to fill this court (need at least 4)." });
-                }
-
-                await _context.SaveChangesAsync();
-                await transaction.CommitAsync();
-
-                var full = await _context.Matches
-                    .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
-                    .FirstAsync(m => m.MatchId == match.MatchId);
-
-                return Ok(_mapper.Map<MatchDto>(full));
-            }
-            catch (InvalidOperationException ex)
-            {
-                await transaction.RollbackAsync();
-                _logger.LogWarning(ex, "Failed to smart-mix court {CourtNumber} for session {SessionId}", courtNumber, sessionId);
-                return BadRequest(new { error = ex.Message });
-            }
-        }
-
-        // 5) Record result for a specific match
-        [HttpPost("record-result")]
-        public async Task<IActionResult> RecordResult(int sessionId, [FromBody] MatchResultDto dto)
-        {
-            if (dto == null || dto.Team1PlayerIds.Count != 2 || dto.Team2PlayerIds.Count != 2)
-                return BadRequest(new { error = "Provide 2 players in each team." });
-            if (dto.Team1Score < 0 || dto.Team2Score < 0)
-                return BadRequest(new { error = "Scores must be non-negative." });
-
-            using var transaction = await _context.Database.BeginTransactionAsync();
-            try
-            {
-                // RecordMatchResultAsync already calls HandlePostMatchAsync internally,
-                // so this controller must not call it again — doing so would redundantly
-                // re-run queue priority updates and auto-fill for every single result.
-                var match = await _matchService.RecordMatchResultAsync(
-                    sessionId,
-                    dto.CourtNumber,
-                    dto.Team1Score,
-                    dto.Team2Score,
-                    dto.Team1PlayerIds,
-                    dto.Team2PlayerIds
-                );
-
-                await _context.SaveChangesAsync();
-                await transaction.CommitAsync();
-
-                return Ok(new { message = "Result recorded, stats updated, and next auto-match attempted.", matchId = match.MatchId });
-            }
-            catch (InvalidOperationException ex)
-            {
-                await transaction.RollbackAsync();
-                _logger.LogError(ex, "Failed to record result for session {SessionId}", sessionId);
-                return BadRequest(new { error = ex.Message });
-            }
-        }
-
-        // 6) Remove player from queue
-        [HttpDelete("queue/{playerId}")]
-        public async Task<IActionResult> RemoveFromQueue(int sessionId, int playerId)
-        {
-            using var transaction = await _context.Database.BeginTransactionAsync();
-            var removed = await _matchService.RemoveFromQueueAsync(sessionId, playerId);
-            if (!removed)
-            {
-                await transaction.RollbackAsync();
-                return NotFound(new { error = "Player not found in queue." });
-            }
-
-            await _context.SaveChangesAsync();
-            await transaction.CommitAsync();
-            return Ok(new { message = $"Player {playerId} removed from queue." });
-        }
-
-        // 7) Get completed matches
-        [HttpGet("completed")]
-        public async Task<ActionResult<List<MatchDto>>> GetCompletedMatches(int sessionId)
-        {
-            var matches = await _matchService.GetSessionMatchesAsync(sessionId);
-            return Ok(_mapper.Map<List<MatchDto>>(matches));
-        }
-
-        // 8) Get active (on-court, in-progress) matches
-        [HttpGet("active")]
-        public async Task<ActionResult<List<MatchDto>>> GetActiveMatches(int sessionId)
-        {
-            var matches = await _matchService.GetActiveMatchesAsync(sessionId);
-            return Ok(_mapper.Map<List<MatchDto>>(matches));
-        }
-
-        // 8.5) Get "next up" matches — prepared, not yet on a court (target: 2). This is
-        // what the queue page's next-up cards should render from.
-        [HttpGet("next-up")]
-        public async Task<ActionResult<List<MatchDto>>> GetNextUpMatches(int sessionId)
-        {
-            var matches = await _matchService.GetNextUpMatchesAsync(sessionId);
-            return Ok(_mapper.Map<List<MatchDto>>(matches));
-        }
-
-        // 8.6) Edit a next-up match: swap two of its players between Team 1 and Team 2.
-        [HttpPut("next-up/{matchId}/swap-teams")]
-        public async Task<ActionResult<MatchDto>> SwapNextUpMatchTeams(int sessionId, int matchId, [FromBody] SwapMatchTeamsDto dto)
-        {
-            using var transaction = await _context.Database.BeginTransactionAsync();
-            try
-            {
-                var match = await _matchService.SwapMatchTeamsAsync(sessionId, matchId, dto.PlayerAId, dto.PlayerBId);
-                await _context.SaveChangesAsync();
-                await transaction.CommitAsync();
-
-                return Ok(_mapper.Map<MatchDto>(match));
-            }
-            catch (InvalidOperationException ex)
-            {
-                await transaction.RollbackAsync();
-                return BadRequest(new { error = ex.Message });
-            }
-        }
-
-        // 8.7) Edit a next-up match: swap one of its players out for a player currently
-        // waiting in the queue. The bumped player goes back to the queue.
-        [HttpPut("next-up/{matchId}/swap-with-queue")]
-        public async Task<ActionResult<MatchDto>> SwapNextUpMatchWithQueue(int sessionId, int matchId, [FromBody] SwapWithQueueDto dto)
-        {
-            using var transaction = await _context.Database.BeginTransactionAsync();
-            try
-            {
-                var match = await _matchService.SwapMatchWithQueueAsync(sessionId, matchId, dto.PlayerOutId, dto.PlayerInId);
-                await _context.SaveChangesAsync();
-                await transaction.CommitAsync();
-
-                return Ok(_mapper.Map<MatchDto>(match));
-            }
-            catch (InvalidOperationException ex)
-            {
-                await transaction.RollbackAsync();
-                return BadRequest(new { error = ex.Message });
-            }
-        }
-
-        // 9) Bench a player — also pulls them out of the queue if they were waiting,
-        // so a benched player can never still show up as "in line" for a match.
-        [HttpPost("bench")]
-        public async Task<ActionResult> BenchPlayer(int sessionId, [FromBody] BenchPlayerDto dto)
-        {
-            if (sessionId <= 0) return BadRequest(new { error = "Invalid session ID" });
-            if (!ModelState.IsValid) return BadRequest(new { error = "Invalid input" });
-
-            using var transaction = await _context.Database.BeginTransactionAsync();
-
-            var result = await _sessionPlayerService.BenchPlayerAsync(sessionId, dto.PlayerId, dto.Reason);
-            if (result == null)
-            {
-                await transaction.RollbackAsync();
-                return NotFound(new { error = "Player not found in this session" });
-            }
-
-            await _matchService.RemoveFromQueueAsync(sessionId, dto.PlayerId);
-
-            await _context.SaveChangesAsync();
-            await transaction.CommitAsync();
-
-            _logger.LogInformation("Player {PlayerId} benched in Session {SessionId}", dto.PlayerId, sessionId);
-            return Ok(new { message = "Player benched successfully", reason = dto.Reason });
-        }
-
-        // 10) Return a player from bench
-        [HttpPost("bench/{playerId}/return")]
-        public async Task<ActionResult> ReturnFromBench(int sessionId, int playerId)
-        {
-            if (sessionId <= 0 || playerId <= 0) return BadRequest(new { error = "Invalid session ID or player ID" });
-
-            var result = await _sessionPlayerService.ReturnFromBenchAsync(sessionId, playerId);
-            if (result == null) return NotFound(new { error = "Player not found in this session or not benched" });
-
-            _logger.LogInformation("Player {PlayerId} returned from bench in Session {SessionId}", playerId, sessionId);
-            return Ok(new { message = "Player returned from bench successfully" });
-        }
-
-        // 10.5) Return a player from bench straight back into the queue, atomically —
-        // if either step fails, neither happens, so a player can never end up stuck
-        // as "Available" when the intent was "Waiting".
-        [HttpPost("bench/{playerId}/return-to-queue")]
-        public async Task<ActionResult<QueueEntryDto>> ReturnToQueue(int sessionId, int playerId)
-        {
-            if (sessionId <= 0 || playerId <= 0) return BadRequest(new { error = "Invalid session ID or player ID" });
-
-            using var transaction = await _context.Database.BeginTransactionAsync();
-            try
-            {
-                var returned = await _sessionPlayerService.ReturnFromBenchAsync(sessionId, playerId);
-                if (returned == null)
-                {
-                    await transaction.RollbackAsync();
-                    return NotFound(new { error = "Player not found in this session or not benched" });
-                }
-
-                var entry = await _matchService.EnqueuePlayerAsync(sessionId, playerId);
-                await _context.SaveChangesAsync();
-                await transaction.CommitAsync();
-
-                _logger.LogInformation("Player {PlayerId} returned from bench and re-queued in Session {SessionId}", playerId, sessionId);
-                return Ok(_mapper.Map<QueueEntryDto>(entry));
-            }
-            catch (InvalidOperationException ex)
-            {
-                await transaction.RollbackAsync();
-                _logger.LogWarning(ex, "Failed to return player {PlayerId} to queue for session {SessionId}", playerId, sessionId);
-                return BadRequest(new { error = ex.Message });
-            }
-        }
-
-        // 11) Get benched players
-        [HttpGet("benched")]
-        public async Task<ActionResult<List<SessionPlayerDto>>> GetBenchedPlayers(int sessionId)
-        {
-            if (sessionId <= 0) return BadRequest(new { error = "Invalid session ID" });
-
-            var benched = await _sessionPlayerService.GetBenchPlayersAsync(sessionId);
-            return Ok(_mapper.Map<List<SessionPlayerDto>>(benched));
-        }
-    }
-}
-</file>
-
-<file path="Interfaces/Services/IMatchService.cs">
-using MixFlowWebApp.Models;
-
-namespace MixFlowWebApp.Interfaces.Services
-{
-    public interface IMatchService
-    {
-        // ---------------- Queue ----------------
-        Task<QueueEntry?> EnqueuePlayerAsync(int sessionId, int playerId);
-        Task<List<QueueEntry>> GetCurrentQueueAsync(int sessionId);
-        Task UpdateQueuePrioritiesAsync(int sessionId);
-        Task<bool> RemoveFromQueueAsync(int sessionId, int playerId);
-
-        // ---------------- Match Creation (randomized only) ----------------
-
-        // Promotes any prepared "next up" matches onto free courts and tops the
-        // next-up pool back up from the queue. This is the single entry point that
-        // keeps courts and the next-up queue full — called after every match result
-        // and by the manual "Auto Match" button.
-        Task AutoFillCourtsFromQueueAsync(int sessionId);
-
-        // Fills exactly one specific court — promotes the next "Ready" match if one is
-        // prepared, otherwise builds a fresh randomized match directly for that court.
-        Task<Match?> CreateMatchForCourtAsync(int sessionId, int courtNumber);
-
-        // ---------------- Next Up (Ready) matches ----------------
-
-        // The prepared, not-yet-started matches waiting for a free court (target: 2).
-        Task<List<Match>> GetNextUpMatchesAsync(int sessionId);
-
-        // Swap two players' team assignments within the same next-up match.
-        Task<Match> SwapMatchTeamsAsync(int sessionId, int matchId, int playerAId, int playerBId);
-
-        // Swap a player out of a next-up match for a player currently waiting in the queue.
-        Task<Match> SwapMatchWithQueueAsync(int sessionId, int matchId, int playerOutId, int playerInId);
-
-        // ---------------- Match Results ----------------
-        Task<Match> RecordMatchResultAsync(int sessionId, int courtNumber, int team1Score, int team2Score, List<int> team1Players, List<int> team2Players);
-        Task HandlePostMatchAsync(int sessionId, List<int> playerIds);
-
-        Task RecordPlayerMatchHistoryAsync(int matchId);
-        Task UpdatePlayerStatsAfterMatchAsync(int matchId);
-
-        Task<List<Match>> GetSessionMatchesAsync(int sessionId);
-        Task<List<Match>> GetActiveMatchesAsync(int sessionId);
-    }
-}
-</file>
-
 <file path="Mappings/MappingProfile.cs">
 using AutoMapper;
 using MixFlowWebApp.DTOs.LeaderboardDTOs;
@@ -6280,773 +6009,6 @@ namespace MixFlowWebApp.Mappings
 }
 </file>
 
-<file path="Program.cs">
-using Microsoft.AspNetCore.Authentication.JwtBearer;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.IdentityModel.Tokens;
-using Microsoft.OpenApi.Models;
-using MixFlowWebApp.Data;
-using MixFlowWebApp.Interfaces.Services;
-using MixFlowWebApp.Interfaces.Services.Auth;
-using MixFlowWebApp.Mappings;
-using MixFlowWebApp.Services;
-using System.Text;
-using System.Text.Json.Serialization;
-
-var builder = WebApplication.CreateBuilder(args);
-
-// Add services to the container.
-builder.Services.AddControllers()
-    .AddJsonOptions(options =>
-    {
-        options.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.IgnoreCycles;
-        options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
-        options.JsonSerializerOptions.WriteIndented = true;
-    });
-
-//  EF core DbContext
-builder.Services.AddDbContext<MixFlowDbContext>(options =>
-    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
-
-// Add memory cache
-builder.Services.AddMemoryCache();
-
-//add automapper
-builder.Services.AddAutoMapper(config =>
-{
-    config.AddProfile<MappingProfile>();
-});
-
-// Services
-builder.Services.AddScoped<IOrganizerService, OrganizerService>();
-builder.Services.AddScoped<IPlayerService, PlayerService>();
-builder.Services.AddScoped<ISessionService, SessionService>();
-builder.Services.AddScoped<ISessionPlayerService, SessionPlayerService>();
-builder.Services.AddScoped<IMatchService, MatchService>();
-builder.Services.AddScoped<ILeaderboardService, LeaderboardService>();
-builder.Services.AddScoped<IJwtService, JwtService>();
-
-builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen(options =>
-{
-    options.SwaggerDoc("v1", new OpenApiInfo
-    {
-        Title = "MixFlow API",
-        Version = "v1",
-        Description = "Pickleball Stacking Management System"
-    });
-
-    options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
-    {
-        Name = "Authorization",
-        Type = SecuritySchemeType.Http,
-        Scheme = "bearer",
-        BearerFormat = "JWT",
-        In = ParameterLocation.Header,
-        Description = "Enter 'Bearer' [space] and then your token"
-    });
-
-    options.AddSecurityRequirement(new OpenApiSecurityRequirement
-    {
-        {
-            new OpenApiSecurityScheme
-            {
-                Reference = new OpenApiReference
-                {
-                    Type = ReferenceType.SecurityScheme,
-                    Id = "Bearer"
-                }
-            },
-            Array.Empty<string>()
-        }
-    });
-});
-
-// JWT Authentication
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
-    {
-        options.TokenValidationParameters = new TokenValidationParameters
-        {
-            ValidateIssuer = true,
-            ValidateAudience = true,
-            ValidateLifetime = true,
-            ValidateIssuerSigningKey = true,
-            ValidIssuer = builder.Configuration["Jwt:Issuer"],
-            ValidAudience = builder.Configuration["Jwt:Audience"],
-            IssuerSigningKey = new SymmetricSecurityKey(
-                Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"] ??
-                    "SuperSecretKeyForDevelopmentOnly1234567890"))
-        };
-    });
-
-//CORS services with a policy for your frontend origin
-builder.Services.AddCors(options =>
-{
-    options.AddPolicy("FrontendPolicy", policy =>
-    {
-        var allowedOrigins = new List<string>
-        {
-            "http://localhost:5173",
-            "https://mix-flow-front-end.vercel.app"
-        };
-
-        policy.WithOrigins(allowedOrigins.ToArray())
-              .AllowAnyHeader()
-              .AllowAnyMethod();
-    });
-});
-
-var app = builder.Build();
-
-
-app.UseSwagger();
-app.UseSwaggerUI();
-
-app.UseHttpsRedirection();
-
-app.UseCors("FrontendPolicy");
-
-app.UseAuthentication();
-app.UseAuthorization();
-
-app.MapControllers();
-
-app.Run();
-</file>
-
-<file path="Services/MatchService.cs">
-using Microsoft.EntityFrameworkCore;
-using MixFlowWebApp.Constants;
-using MixFlowWebApp.Data;
-using MixFlowWebApp.Interfaces.Services;
-using MixFlowWebApp.Models;
-
-namespace MixFlowWebApp.Services
-{
-    public class MatchService : IMatchService
-    {
-        // How many prepared-but-not-started matches the "next up" queue tries to keep
-        // ready at all times, so the organizer always has a couple of cards to review
-        // or edit before they hit a court.
-        private const int TargetReadyMatchCount = 2;
-
-        private readonly MixFlowDbContext _context;
-        private readonly ILeaderboardService _leaderboardService;
-
-        public MatchService(MixFlowDbContext context, ILeaderboardService leaderboardService)
-        {
-            _context = context;
-            _leaderboardService = leaderboardService;
-        }
-
-        // ---------------- Queue Management ----------------
-
-        public async Task<QueueEntry?> EnqueuePlayerAsync(int sessionId, int playerId)
-        {
-            var session = await _context.Sessions.FirstOrDefaultAsync(s => s.SessionId == sessionId);
-            if (session == null || session.Status != "Active")
-                throw new InvalidOperationException("Session not found or not active.");
-
-            var sp = await _context.SessionPlayers
-                .FirstOrDefaultAsync(x => x.SessionId == sessionId && x.PlayerId == playerId && x.Status != "Benched");
-            if (sp == null)
-                throw new InvalidOperationException("Player is not checked into this session or is benched.");
-
-            var alreadyInMatch = await _context.MatchPlayers
-                .AnyAsync(mp => mp.PlayerId == playerId && mp.Match.SessionId == sessionId && mp.Match.Status != MatchStatus.Completed);
-            if (alreadyInMatch)
-                throw new InvalidOperationException("Player is currently in a match.");
-
-            return await UpsertWaitingQueueEntryAsync(sessionId, playerId);
-        }
-
-        public async Task<List<QueueEntry>> GetCurrentQueueAsync(int sessionId)
-        {
-            return await _context.QueueEntries
-                .Where(q => q.SessionId == sessionId && q.Status == "Waiting")
-                .Include(q => q.Player)
-                .OrderBy(q => q.Position)
-                .ThenBy(q => q.CheckInTime)
-                .ToListAsync();
-        }
-
-        public async Task UpdateQueuePrioritiesAsync(int sessionId)
-        {
-            var waiting = await _context.QueueEntries
-                .Where(q => q.SessionId == sessionId && q.Status == "Waiting")
-                .Include(q => q.Player)
-                .ToListAsync();
-
-            foreach (var q in waiting)
-            {
-                q.PriorityScore = CalculatePriority(q);
-            }
-
-            var ordered = waiting
-                .OrderByDescending(q => q.PriorityScore ?? 0m)
-                .ThenBy(q => q.CheckInTime)
-                .ToList();
-
-            for (int i = 0; i < ordered.Count; i++)
-            {
-                ordered[i].Position = i + 1;
-            }
-        }
-
-        public async Task<bool> RemoveFromQueueAsync(int sessionId, int playerId)
-        {
-            var entry = await _context.QueueEntries
-                .FirstOrDefaultAsync(q => q.SessionId == sessionId && q.PlayerId == playerId && q.Status == "Waiting");
-
-            if (entry == null) return false;
-
-            entry.Status = "Removed";
-            entry.Position = null;
-
-            return true;
-        }
-
-        // Puts a player back into the "Waiting" queue, reusing their existing QueueEntry
-        // row if they already have one for this session instead of inserting a new row.
-        // QueueEntry has a unique (SessionId, PlayerId) index, so a naive insert-if-not-
-        // "Waiting" check (as this used to be) throws a DB conflict — and therefore a 500 —
-        // the moment a player who already has a non-"Waiting" row (e.g. "Removed" from a
-        // bench, or "InMatch" from a prior match) gets queued again.
-        private async Task<QueueEntry> UpsertWaitingQueueEntryAsync(int sessionId, int playerId)
-        {
-            var existing = await _context.QueueEntries
-                .Include(q => q.Player)
-                .FirstOrDefaultAsync(q => q.SessionId == sessionId && q.PlayerId == playerId);
-
-            if (existing != null)
-            {
-                existing.Status = "Waiting";
-                existing.CheckInTime = DateTime.UtcNow;
-                existing.Position = null;
-                return existing;
-            }
-
-            var entry = new QueueEntry
-            {
-                SessionId = sessionId,
-                PlayerId = playerId,
-                Status = "Waiting",
-                CheckInTime = DateTime.UtcNow
-            };
-
-            _context.QueueEntries.Add(entry);
-            await _context.SaveChangesAsync();
-
-            return await _context.QueueEntries
-                .Include(q => q.Player)
-                .FirstAsync(q => q.QueueId == entry.QueueId);
-        }
-
-        // ---------------- Match Creation (randomized only) ----------------
-
-        public async Task AutoFillCourtsFromQueueAsync(int sessionId)
-        {
-            var session = await _context.Sessions.FirstOrDefaultAsync(s => s.SessionId == sessionId);
-            if (session == null || session.Status != "Active") return;
-
-            // Send whatever's already prepared to any free courts, top the next-up
-            // pool back up from the queue, then promote again in case the newly built
-            // matches can immediately cover courts that were still free.
-            await PromoteReadyMatchesToCourtsAsync(sessionId);
-            await EnsureReadyMatchesAsync(sessionId);
-            await PromoteReadyMatchesToCourtsAsync(sessionId);
-        }
-
-        // Fills exactly the requested court — never touches any other court, unlike
-        // AutoFillCourtsFromQueueAsync which fills every free court it can.
-        public async Task<Match?> CreateMatchForCourtAsync(int sessionId, int courtNumber)
-        {
-            var session = await _context.Sessions.FirstOrDefaultAsync(s => s.SessionId == sessionId);
-            if (session == null || session.Status != "Active")
-                throw new InvalidOperationException("Session not found or not active.");
-
-            if (courtNumber < 1 || courtNumber > session.NumberOfCourts)
-                throw new InvalidOperationException($"Court {courtNumber} is out of range for this session.");
-
-            var courtOccupied = await _context.Matches
-                .AnyAsync(m => m.SessionId == sessionId && m.CourtNumber == courtNumber && m.Status == MatchStatus.Active);
-            if (courtOccupied)
-                throw new InvalidOperationException($"Court {courtNumber} already has a match in progress.");
-
-            // Prefer a match that's already prepared and waiting in the next-up queue —
-            // send it straight to this court instead of building a brand new one.
-            var readyMatch = await _context.Matches
-                .Where(m => m.SessionId == sessionId && m.Status == MatchStatus.Ready)
-                .OrderBy(m => m.MatchId)
-                .FirstOrDefaultAsync();
-
-            if (readyMatch != null)
-            {
-                readyMatch.CourtNumber = courtNumber;
-                readyMatch.Status = MatchStatus.Active;
-                readyMatch.StartTime = DateTime.UtcNow;
-
-                await _context.SaveChangesAsync();
-                await EnsureReadyMatchesAsync(sessionId);
-
-                return readyMatch;
-            }
-
-            // Nothing prepared — build one directly for this court from the queue.
-            await UpdateQueuePrioritiesAsync(sessionId);
-
-            var queueEntries = await _context.QueueEntries
-                .Where(q => q.SessionId == sessionId && q.Status == "Waiting")
-                .Include(q => q.Player)
-                .OrderByDescending(q => q.PriorityScore)
-                .ThenBy(q => q.CheckInTime)
-                .ToListAsync();
-
-            var lockedPartnerByPlayerId = await _context.SessionPlayers
-                .Where(sp => sp.SessionId == sessionId && sp.LockedPartnerId != null)
-                .ToDictionaryAsync(sp => sp.PlayerId, sp => sp.LockedPartnerId!.Value);
-
-            var selectedPlayers = PickFourForNextCourt(queueEntries, lockedPartnerByPlayerId);
-            if (selectedPlayers.Count < 4) return null;
-
-            var match = new Match
-            {
-                SessionId = sessionId,
-                CourtNumber = courtNumber,
-                RotationMode = "RandomMix",
-                Status = MatchStatus.Active,
-                StartTime = DateTime.UtcNow,
-                IsCompleted = false
-            };
-
-            _context.Matches.Add(match);
-            await _context.SaveChangesAsync();
-
-            AssignTeams(match, selectedPlayers, lockedPartnerByPlayerId);
-
-            foreach (var entry in queueEntries.Where(q => selectedPlayers.Any(p => p.PlayerId == q.PlayerId)))
-            {
-                entry.Status = "InMatch";
-                entry.Position = null;
-            }
-
-            await _context.SaveChangesAsync();
-            await EnsureReadyMatchesAsync(sessionId);
-
-            return match;
-        }
-
-        // ---------------- Next Up (Ready) matches ----------------
-
-        public async Task<List<Match>> GetNextUpMatchesAsync(int sessionId)
-        {
-            return await _context.Matches
-                .Where(m => m.SessionId == sessionId && m.Status == MatchStatus.Ready)
-                .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
-                .OrderBy(m => m.MatchId)
-                .ToListAsync();
-        }
-
-        public async Task<Match> SwapMatchTeamsAsync(int sessionId, int matchId, int playerAId, int playerBId)
-        {
-            if (playerAId == playerBId)
-                throw new InvalidOperationException("Choose two different players to swap.");
-
-            var match = await _context.Matches
-                .Include(m => m.MatchPlayers)
-                .FirstOrDefaultAsync(m => m.MatchId == matchId && m.SessionId == sessionId);
-
-            if (match == null)
-                throw new InvalidOperationException("Match not found.");
-            if (match.Status != MatchStatus.Ready)
-                throw new InvalidOperationException("Only an upcoming (not yet started) match can be edited.");
-
-            var mpA = match.MatchPlayers.FirstOrDefault(mp => mp.PlayerId == playerAId);
-            var mpB = match.MatchPlayers.FirstOrDefault(mp => mp.PlayerId == playerBId);
-
-            if (mpA == null || mpB == null)
-                throw new InvalidOperationException("Both players must currently be in this match.");
-            if (mpA.TeamNumber == mpB.TeamNumber)
-                throw new InvalidOperationException("Those two players are already on the same team.");
-
-            (mpA.TeamNumber, mpB.TeamNumber) = (mpB.TeamNumber, mpA.TeamNumber);
-
-            await _context.SaveChangesAsync();
-
-            return await _context.Matches
-                .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
-                .FirstAsync(m => m.MatchId == match.MatchId);
-        }
-
-        public async Task<Match> SwapMatchWithQueueAsync(int sessionId, int matchId, int playerOutId, int playerInId)
-        {
-            if (playerOutId == playerInId)
-                throw new InvalidOperationException("Choose two different players to swap.");
-
-            var match = await _context.Matches
-                .Include(m => m.MatchPlayers)
-                .FirstOrDefaultAsync(m => m.MatchId == matchId && m.SessionId == sessionId);
-
-            if (match == null)
-                throw new InvalidOperationException("Match not found.");
-            if (match.Status != MatchStatus.Ready)
-                throw new InvalidOperationException("Only an upcoming (not yet started) match can be edited.");
-
-            var outgoing = match.MatchPlayers.FirstOrDefault(mp => mp.PlayerId == playerOutId);
-            if (outgoing == null)
-                throw new InvalidOperationException("That player isn't currently in this match.");
-
-            if (match.MatchPlayers.Any(mp => mp.PlayerId == playerInId))
-                throw new InvalidOperationException("That player is already in this match.");
-
-            var incomingQueueEntry = await _context.QueueEntries
-                .FirstOrDefaultAsync(q => q.SessionId == sessionId && q.PlayerId == playerInId && q.Status == "Waiting");
-            if (incomingQueueEntry == null)
-                throw new InvalidOperationException("That player isn't currently waiting in the queue.");
-
-            var teamNumber = outgoing.TeamNumber;
-
-            _context.MatchPlayers.Remove(outgoing);
-            _context.MatchPlayers.Add(new MatchPlayer { MatchId = match.MatchId, PlayerId = playerInId, TeamNumber = teamNumber });
-
-            incomingQueueEntry.Status = "InMatch";
-            incomingQueueEntry.Position = null;
-
-            await UpsertWaitingQueueEntryAsync(sessionId, playerOutId);
-
-            await _context.SaveChangesAsync();
-
-            return await _context.Matches
-                .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
-                .FirstAsync(m => m.MatchId == match.MatchId);
-        }
-
-        // Builds up to TargetReadyMatchCount "Ready" matches from the queue (no court
-        // assigned yet). Safe to call any time — it only tops the pool up, never removes
-        // from it.
-        private async Task EnsureReadyMatchesAsync(int sessionId)
-        {
-            var readyCount = await _context.Matches
-                .CountAsync(m => m.SessionId == sessionId && m.Status == MatchStatus.Ready);
-
-            if (readyCount >= TargetReadyMatchCount) return;
-
-            await UpdateQueuePrioritiesAsync(sessionId);
-
-            var queueEntries = await _context.QueueEntries
-                .Where(q => q.SessionId == sessionId && q.Status == "Waiting")
-                .Include(q => q.Player)
-                .OrderByDescending(q => q.PriorityScore)
-                .ThenBy(q => q.CheckInTime)
-                .ToListAsync();
-
-            var lockedPartnerByPlayerId = await _context.SessionPlayers
-                .Where(sp => sp.SessionId == sessionId && sp.LockedPartnerId != null)
-                .ToDictionaryAsync(sp => sp.PlayerId, sp => sp.LockedPartnerId!.Value);
-
-            var remainingQueue = new List<QueueEntry>(queueEntries);
-
-            while (readyCount < TargetReadyMatchCount)
-            {
-                var selectedPlayers = PickFourForNextCourt(remainingQueue, lockedPartnerByPlayerId);
-                if (selectedPlayers.Count < 4) break;
-
-                var match = new Match
-                {
-                    SessionId = sessionId,
-                    CourtNumber = null,
-                    RotationMode = "RandomMix",
-                    Status = MatchStatus.Ready,
-                    IsCompleted = false
-                };
-
-                _context.Matches.Add(match);
-                await _context.SaveChangesAsync();
-
-                AssignTeams(match, selectedPlayers, lockedPartnerByPlayerId);
-
-                foreach (var entry in remainingQueue.Where(q => selectedPlayers.Any(p => p.PlayerId == q.PlayerId)))
-                {
-                    entry.Status = "InMatch";
-                    entry.Position = null;
-                }
-
-                remainingQueue.RemoveAll(q => selectedPlayers.Any(p => p.PlayerId == q.PlayerId));
-                readyCount++;
-            }
-
-            await _context.SaveChangesAsync();
-        }
-
-        // Assigns any prepared "Ready" matches to free courts, oldest-first.
-        private async Task PromoteReadyMatchesToCourtsAsync(int sessionId)
-        {
-            var session = await _context.Sessions.FirstOrDefaultAsync(s => s.SessionId == sessionId);
-            if (session == null || session.Status != "Active") return;
-
-            var occupiedCourts = await _context.Matches
-                .Where(m => m.SessionId == sessionId && m.Status == MatchStatus.Active && m.CourtNumber.HasValue)
-                .Select(m => m.CourtNumber!.Value)
-                .ToListAsync();
-
-            var freeCourts = Enumerable.Range(1, session.NumberOfCourts)
-                .Where(c => !occupiedCourts.Contains(c))
-                .ToList();
-
-            if (freeCourts.Count == 0) return;
-
-            var readyMatches = await _context.Matches
-                .Where(m => m.SessionId == sessionId && m.Status == MatchStatus.Ready)
-                .OrderBy(m => m.MatchId)
-                .ToListAsync();
-
-            var readyQueue = new Queue<Match>(readyMatches);
-
-            foreach (var court in freeCourts)
-            {
-                if (readyQueue.Count == 0) break;
-
-                var next = readyQueue.Dequeue();
-                next.CourtNumber = court;
-                next.Status = MatchStatus.Active;
-                next.StartTime = DateTime.UtcNow;
-            }
-
-            await _context.SaveChangesAsync();
-        }
-
-        // Shared by EnsureReadyMatchesAsync and CreateMatchForCourtAsync so team
-        // assignment (including keeping locked pairs together) only lives in one place.
-        private void AssignTeams(Match match, List<Player> selectedPlayers, Dictionary<int, int> lockedPartnerByPlayerId)
-        {
-            var team1 = new List<Player>();
-            var team2 = new List<Player>();
-            foreach (var p in selectedPlayers)
-            {
-                var target = team1.Count <= team2.Count ? team1 : team2;
-                if (lockedPartnerByPlayerId.TryGetValue(p.PlayerId, out var partnerId)
-                    && selectedPlayers.Any(sp => sp.PlayerId == partnerId))
-                {
-                    target = team1.Count < 2 ? team1 : team2;
-                }
-                target.Add(p);
-            }
-
-            foreach (var p in team1)
-                _context.MatchPlayers.Add(new MatchPlayer { MatchId = match.MatchId, PlayerId = p.PlayerId, TeamNumber = 1 });
-            foreach (var p in team2)
-                _context.MatchPlayers.Add(new MatchPlayer { MatchId = match.MatchId, PlayerId = p.PlayerId, TeamNumber = 2 });
-        }
-
-        private List<Player> PickFourForNextCourt(List<QueueEntry> remainingQueue, Dictionary<int, int> lockedPartnerByPlayerId)
-        {
-            var selected = new List<Player>();
-            var selectedIds = new HashSet<int>();
-            var queuedPlayerIds = remainingQueue.Select(q => q.PlayerId).ToHashSet();
-            var consideredPairs = new HashSet<int>();
-
-            // Pass 1: pull in any complete locked pair first, wherever it sits in the queue.
-            foreach (var entry in remainingQueue)
-            {
-                if (selected.Count >= 4) break;
-                if (selectedIds.Contains(entry.PlayerId) || consideredPairs.Contains(entry.PlayerId)) continue;
-
-                if (lockedPartnerByPlayerId.TryGetValue(entry.PlayerId, out var partnerId) && queuedPlayerIds.Contains(partnerId))
-                {
-                    consideredPairs.Add(entry.PlayerId);
-                    consideredPairs.Add(partnerId);
-
-                    if (selected.Count <= 2)
-                    {
-                        var partnerEntry = remainingQueue.First(q => q.PlayerId == partnerId);
-                        selected.Add(entry.Player);
-                        selected.Add(partnerEntry.Player);
-                        selectedIds.Add(entry.PlayerId);
-                        selectedIds.Add(partnerId);
-                    }
-                }
-            }
-
-            // Pass 2: fill any remaining slots with whoever's next in normal queue order.
-            foreach (var entry in remainingQueue)
-            {
-                if (selected.Count >= 4) break;
-                if (selectedIds.Contains(entry.PlayerId)) continue;
-
-                selected.Add(entry.Player);
-                selectedIds.Add(entry.PlayerId);
-            }
-
-            return selected;
-        }
-
-        // ---------------- Match Results ----------------
-
-        public async Task<Match> RecordMatchResultAsync(int sessionId, int courtNumber, int team1Score, int team2Score, List<int> team1Players, List<int> team2Players)
-        {
-            var match = await _context.Matches
-                .Include(m => m.MatchPlayers)
-                .FirstOrDefaultAsync(m => m.SessionId == sessionId
-                               && m.CourtNumber == courtNumber
-                               && m.Status == MatchStatus.Active);
-
-            if (match == null)
-                throw new InvalidOperationException("Active match not found.");
-
-            match.Team1Score = team1Score;
-            match.Team2Score = team2Score;
-            match.IsCompleted = true;
-            match.Status = MatchStatus.Completed;
-            match.EndTime = DateTime.UtcNow;
-
-            _context.MatchPlayers.RemoveRange(match.MatchPlayers);
-
-            bool team1Won = team1Score > team2Score;
-            bool team2Won = team2Score > team1Score;
-
-            foreach (var playerId in team1Players)
-            {
-                _context.MatchPlayers.Add(new MatchPlayer
-                {
-                    MatchId = match.MatchId,
-                    PlayerId = playerId,
-                    TeamNumber = 1,
-                    IsWinner = team1Won
-                });
-            }
-
-            foreach (var playerId in team2Players)
-            {
-                _context.MatchPlayers.Add(new MatchPlayer
-                {
-                    MatchId = match.MatchId,
-                    PlayerId = playerId,
-                    TeamNumber = 2,
-                    IsWinner = team2Won
-                });
-            }
-
-            await _context.SaveChangesAsync();
-
-            await RecordPlayerMatchHistoryAsync(match.MatchId);
-            await UpdatePlayerStatsAfterMatchAsync(match.MatchId);
-
-            _leaderboardService.InvalidateOverallLeaderboardCache();
-
-            await HandlePostMatchAsync(sessionId, team1Players.Concat(team2Players).ToList());
-
-            return match;
-        }
-
-        public async Task HandlePostMatchAsync(int sessionId, List<int> playerIds)
-        {
-            foreach (var pid in playerIds)
-            {
-                await UpsertWaitingQueueEntryAsync(sessionId, pid);
-            }
-
-            await _context.SaveChangesAsync();
-
-            await UpdateQueuePrioritiesAsync(sessionId);
-            await AutoFillCourtsFromQueueAsync(sessionId);
-        }
-
-        public async Task RecordPlayerMatchHistoryAsync(int matchId)
-        {
-            var matchPlayers = await GetMatchPlayersAsync(matchId);
-
-            var team1 = matchPlayers.Where(mp => mp.TeamNumber == 1).ToList();
-            var team2 = matchPlayers.Where(mp => mp.TeamNumber == 2).ToList();
-
-            foreach (var mp in matchPlayers)
-            {
-                var history = new PlayerMatchHistory
-                {
-                    PlayerId = mp.PlayerId,
-                    MatchId = matchId,
-                    PlayedAt = DateTime.UtcNow,
-                    PartnerId = mp.TeamNumber == 1
-                        ? team1.FirstOrDefault(p => p.PlayerId != mp.PlayerId)?.PlayerId
-                        : team2.FirstOrDefault(p => p.PlayerId != mp.PlayerId)?.PlayerId
-                };
-
-                var opponents = mp.TeamNumber == 1 ? team2 : team1;
-                if (opponents.Count >= 1) history.Opponent1Id = opponents[0].PlayerId;
-                if (opponents.Count >= 2) history.Opponent2Id = opponents[1].PlayerId;
-
-                _context.PlayerMatchHistories.Add(history);
-            }
-
-            await _context.SaveChangesAsync();
-        }
-
-        public async Task UpdatePlayerStatsAfterMatchAsync(int matchId)
-        {
-            var matchPlayers = await GetMatchPlayersAsync(matchId);
-
-            foreach (var mp in matchPlayers)
-            {
-                var player = await _context.Players.FindAsync(mp.PlayerId);
-                if (player == null) continue;
-
-                player.GamesPlayed += 1;
-
-                if (mp.IsWinner == true)
-                    player.TotalWins += 1;
-                else
-                    player.TotalLosses += 1;
-
-                player.WinPercentage = player.GamesPlayed > 0
-                    ? Math.Round((decimal)player.TotalWins * 100 / player.GamesPlayed, 2)
-                    : 0;
-
-                player.UpdatedAt = DateTime.UtcNow;
-            }
-
-            await _context.SaveChangesAsync();
-        }
-
-        public async Task<List<Match>> GetSessionMatchesAsync(int sessionId)
-        {
-            return await _context.Matches
-                .Where(m => m.SessionId == sessionId && m.IsCompleted)
-                .Include(m => m.MatchPlayers)
-                    .ThenInclude(mp => mp.Player)
-                .OrderByDescending(m => m.EndTime)
-                .ToListAsync();
-        }
-
-        public async Task<List<Match>> GetActiveMatchesAsync(int sessionId)
-        {
-            return await _context.Matches
-                .Where(m => m.SessionId == sessionId && m.Status == MatchStatus.Active)
-                .Include(m => m.MatchPlayers)
-                    .ThenInclude(mp => mp.Player)
-                .OrderBy(m => m.StartTime)
-                .ToListAsync();
-        }
-
-        // ---------------- Helpers ----------------
-
-        private decimal CalculatePriority(QueueEntry entry)
-        {
-            var waiting = (decimal)(DateTime.UtcNow - entry.CheckInTime).TotalMinutes * 10m;
-            var skill = entry.Player.SkillLevel * 30m;
-            var winp = entry.Player.WinPercentage * 0.5m;
-            return waiting + skill + winp;
-        }
-
-        private async Task<List<MatchPlayer>> GetMatchPlayersAsync(int matchId)
-        {
-            return await _context.MatchPlayers
-                .Where(mp => mp.MatchId == matchId)
-                .ToListAsync();
-        }
-    }
-}
-</file>
-
 <file path="Services/SessionPlayerService.cs">
 using AutoMapper;
 using Microsoft.EntityFrameworkCore;
@@ -7084,6 +6046,19 @@ namespace MixFlowWebApp.Services
 
             if (existing != null) return existing;
 
+            // A player can only be checked into one Active session at a time. Without this,
+            // someone could end up queued, benched, or mid-match in two live sessions
+            // simultaneously — which corrupts queue state, stats, and match assignment
+            // for both sessions at once.
+            var alreadyInAnotherActiveSession = await _context.SessionPlayers
+                .Include(sp => sp.Session)
+                .AnyAsync(sp => sp.PlayerId == playerId
+                             && sp.SessionId != sessionId
+                             && sp.Session.Status == SessionStatus.Active);
+
+            if (alreadyInAnotherActiveSession)
+                throw new InvalidOperationException("This player is already checked into another active session.");
+
             var sessionPlayer = new SessionPlayer
             {
                 SessionId = sessionId,
@@ -7094,20 +6069,6 @@ namespace MixFlowWebApp.Services
 
             _context.SessionPlayers.Add(sessionPlayer);
             await _context.SaveChangesAsync();
-
-            // Being added to the session and being in line to play are the same moment now —
-            // there's no longer a gap where a player is "checked in" but invisible everywhere
-            // on the Queue page.
-            try
-            {
-                await _matchService.EnqueuePlayerAsync(sessionId, playerId);
-                await _context.SaveChangesAsync();
-            }
-            catch (InvalidOperationException)
-            {
-                // Session isn't Active yet, or similar — fine, they're still added to the
-                // roster, just not queued. Not worth failing the whole add-to-roster call over.
-            }
 
             return await _context.SessionPlayers
                 .Include(sp => sp.Player)
@@ -7414,6 +6375,389 @@ namespace MixFlowWebApp.Services
                 CheckInTime = DateTime.UtcNow
             });
         }
+    }
+}
+</file>
+
+<file path="Controllers/MatchController.cs">
+using AutoMapper;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using MixFlowWebApp.Data;
+using MixFlowWebApp.DTOs.MatchDTOs;
+using MixFlowWebApp.DTOs.QueueEntryDTOs;
+using MixFlowWebApp.DTOs.SessionPlayerDTOs;
+using MixFlowWebApp.Interfaces.Services;
+
+namespace MixFlowWebApp.Controllers
+{
+    [ApiController]
+    [Route("api/matches")]
+    [Authorize]
+    public class MatchController : ControllerBase
+    {
+        private readonly IMatchService _matchService;
+        private readonly ISessionPlayerService _sessionPlayerService;
+        private readonly IMapper _mapper;
+        private readonly ILogger<MatchController> _logger;
+        private readonly MixFlowDbContext _context;
+
+        public MatchController(
+            IMatchService matchService,
+            ISessionPlayerService sessionPlayerService,
+            IMapper mapper,
+            ILogger<MatchController> logger,
+            MixFlowDbContext context)
+        {
+            _matchService = matchService;
+            _sessionPlayerService = sessionPlayerService;
+            _mapper = mapper;
+            _logger = logger;
+            _context = context;
+        }
+
+        // 1) Enqueue player
+        [HttpPost("enqueue/{playerId}")]
+        public async Task<ActionResult<QueueEntryDto>> EnqueuePlayer(int sessionId, int playerId)
+        {
+            using var transaction = await _context.Database.BeginTransactionAsync();
+            try
+            {
+                var entry = await _matchService.EnqueuePlayerAsync(sessionId, playerId);
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                return Ok(_mapper.Map<QueueEntryDto>(entry));
+            }
+            catch (InvalidOperationException ex)
+            {
+                await transaction.RollbackAsync();
+                _logger.LogWarning(ex, "Failed to enqueue player {PlayerId} for session {SessionId}", playerId, sessionId);
+                return BadRequest(new { error = ex.Message });
+            }
+        }
+
+        // 2) View queue
+        [HttpGet("queue")]
+        public async Task<ActionResult<List<QueueEntryDto>>> GetQueue(int sessionId)
+        {
+            var items = await _matchService.GetCurrentQueueAsync(sessionId);
+            return Ok(_mapper.Map<List<QueueEntryDto>>(items));
+        }
+
+        // 3) Auto-match: promote next-up matches to free courts and top the next-up
+        // queue back up to 2 prepared matches.
+        [HttpPost("auto-match")]
+        public async Task<IActionResult> AutoMatch(int sessionId)
+        {
+            using var transaction = await _context.Database.BeginTransactionAsync();
+            try
+            {
+                await _matchService.AutoFillCourtsFromQueueAsync(sessionId);
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                return Ok(new { message = "Auto-matching triggered." });
+            }
+            catch (Exception ex)
+            {
+                await transaction.RollbackAsync();
+                return BadRequest(new { error = ex.Message });
+            }
+        }
+
+        // 4) Fill exactly one specific court from the queue — unlike auto-match, this
+        // never touches any other court, even if several are free at once. Promotes an
+        // already-prepared next-up match if one exists, otherwise builds a fresh one.
+        [HttpPost("court/{courtNumber}/smart-mix")]
+        public async Task<ActionResult<MatchDto>> SmartMixCourt(int sessionId, int courtNumber)
+        {
+            using var transaction = await _context.Database.BeginTransactionAsync();
+            try
+            {
+                var match = await _matchService.CreateMatchForCourtAsync(sessionId, courtNumber);
+                if (match == null)
+                {
+                    await transaction.RollbackAsync();
+                    return BadRequest(new { error = "Not enough players in the queue to fill this court (need at least 4)." });
+                }
+
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                var full = await _context.Matches
+                    .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
+                    .FirstAsync(m => m.MatchId == match.MatchId);
+
+                return Ok(_mapper.Map<MatchDto>(full));
+            }
+            catch (InvalidOperationException ex)
+            {
+                await transaction.RollbackAsync();
+                _logger.LogWarning(ex, "Failed to smart-mix court {CourtNumber} for session {SessionId}", courtNumber, sessionId);
+                return BadRequest(new { error = ex.Message });
+            }
+        }
+
+        // 5) Record result for a specific match
+        [HttpPost("record-result")]
+        public async Task<IActionResult> RecordResult(int sessionId, [FromBody] MatchResultDto dto)
+        {
+            if (dto == null || dto.Team1PlayerIds.Count != 2 || dto.Team2PlayerIds.Count != 2)
+                return BadRequest(new { error = "Provide 2 players in each team." });
+            if (dto.Team1Score < 0 || dto.Team2Score < 0)
+                return BadRequest(new { error = "Scores must be non-negative." });
+
+            using var transaction = await _context.Database.BeginTransactionAsync();
+            try
+            {
+                // RecordMatchResultAsync already calls HandlePostMatchAsync internally,
+                // so this controller must not call it again — doing so would redundantly
+                // re-run queue priority updates and auto-fill for every single result.
+                var match = await _matchService.RecordMatchResultAsync(
+                    sessionId,
+                    dto.CourtNumber,
+                    dto.Team1Score,
+                    dto.Team2Score,
+                    dto.Team1PlayerIds,
+                    dto.Team2PlayerIds
+                );
+
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                return Ok(new { message = "Result recorded, stats updated, and next auto-match attempted.", matchId = match.MatchId });
+            }
+            catch (InvalidOperationException ex)
+            {
+                await transaction.RollbackAsync();
+                _logger.LogError(ex, "Failed to record result for session {SessionId}", sessionId);
+                return BadRequest(new { error = ex.Message });
+            }
+        }
+
+        // 6) Remove player from queue
+        [HttpDelete("queue/{playerId}")]
+        public async Task<IActionResult> RemoveFromQueue(int sessionId, int playerId)
+        {
+            using var transaction = await _context.Database.BeginTransactionAsync();
+            var removed = await _matchService.RemoveFromQueueAsync(sessionId, playerId);
+            if (!removed)
+            {
+                await transaction.RollbackAsync();
+                return NotFound(new { error = "Player not found in queue." });
+            }
+
+            await _context.SaveChangesAsync();
+            await transaction.CommitAsync();
+            return Ok(new { message = $"Player {playerId} removed from queue." });
+        }
+
+        // 7) Get completed matches
+        [HttpGet("completed")]
+        public async Task<ActionResult<List<MatchDto>>> GetCompletedMatches(int sessionId)
+        {
+            var matches = await _matchService.GetSessionMatchesAsync(sessionId);
+            return Ok(_mapper.Map<List<MatchDto>>(matches));
+        }
+
+        // 8) Get active (on-court, in-progress) matches
+        [HttpGet("active")]
+        public async Task<ActionResult<List<MatchDto>>> GetActiveMatches(int sessionId)
+        {
+            var matches = await _matchService.GetActiveMatchesAsync(sessionId);
+            return Ok(_mapper.Map<List<MatchDto>>(matches));
+        }
+
+        // 8.5) Get "next up" matches — prepared, not yet on a court (target: 2). This is
+        // what the queue page's next-up cards should render from.
+        [HttpGet("next-up")]
+        public async Task<ActionResult<List<MatchDto>>> GetNextUpMatches(int sessionId)
+        {
+            var matches = await _matchService.GetNextUpMatchesAsync(sessionId);
+            return Ok(_mapper.Map<List<MatchDto>>(matches));
+        }
+
+        // 8.6) Edit a match's teams: swap two players between Team 1 and Team 2. Works on
+        // a next-up match or the match currently on a court (not a completed one). Route
+        // kept as "next-up/..." for frontend compatibility even though it now also
+        // applies to in-progress matches.
+        [HttpPut("next-up/{matchId}/swap-teams")]
+        public async Task<ActionResult<MatchDto>> SwapNextUpMatchTeams(int sessionId, int matchId, [FromBody] SwapMatchTeamsDto dto)
+        {
+            using var transaction = await _context.Database.BeginTransactionAsync();
+            try
+            {
+                var match = await _matchService.SwapMatchTeamsAsync(sessionId, matchId, dto.PlayerAId, dto.PlayerBId);
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                return Ok(_mapper.Map<MatchDto>(match));
+            }
+            catch (InvalidOperationException ex)
+            {
+                await transaction.RollbackAsync();
+                return BadRequest(new { error = ex.Message });
+            }
+        }
+
+        // 8.7) Edit a match: swap one of its players out for a player currently waiting in
+        // the queue. The bumped player goes back to the queue. Works on a next-up match or
+        // the match currently on a court (not a completed one).
+        [HttpPut("next-up/{matchId}/swap-with-queue")]
+        public async Task<ActionResult<MatchDto>> SwapNextUpMatchWithQueue(int sessionId, int matchId, [FromBody] SwapWithQueueDto dto)
+        {
+            using var transaction = await _context.Database.BeginTransactionAsync();
+            try
+            {
+                var match = await _matchService.SwapMatchWithQueueAsync(sessionId, matchId, dto.PlayerOutId, dto.PlayerInId);
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                return Ok(_mapper.Map<MatchDto>(match));
+            }
+            catch (InvalidOperationException ex)
+            {
+                await transaction.RollbackAsync();
+                return BadRequest(new { error = ex.Message });
+            }
+        }
+
+        // 9) Bench a player — also pulls them out of the queue if they were waiting,
+        // so a benched player can never still show up as "in line" for a match.
+        [HttpPost("bench")]
+        public async Task<ActionResult> BenchPlayer(int sessionId, [FromBody] BenchPlayerDto dto)
+        {
+            if (sessionId <= 0) return BadRequest(new { error = "Invalid session ID" });
+            if (!ModelState.IsValid) return BadRequest(new { error = "Invalid input" });
+
+            using var transaction = await _context.Database.BeginTransactionAsync();
+
+            var result = await _sessionPlayerService.BenchPlayerAsync(sessionId, dto.PlayerId, dto.Reason);
+            if (result == null)
+            {
+                await transaction.RollbackAsync();
+                return NotFound(new { error = "Player not found in this session" });
+            }
+
+            await _matchService.RemoveFromQueueAsync(sessionId, dto.PlayerId);
+
+            await _context.SaveChangesAsync();
+            await transaction.CommitAsync();
+
+            _logger.LogInformation("Player {PlayerId} benched in Session {SessionId}", dto.PlayerId, sessionId);
+            return Ok(new { message = "Player benched successfully", reason = dto.Reason });
+        }
+
+        // 10) Return a player from bench
+        [HttpPost("bench/{playerId}/return")]
+        public async Task<ActionResult> ReturnFromBench(int sessionId, int playerId)
+        {
+            if (sessionId <= 0 || playerId <= 0) return BadRequest(new { error = "Invalid session ID or player ID" });
+
+            var result = await _sessionPlayerService.ReturnFromBenchAsync(sessionId, playerId);
+            if (result == null) return NotFound(new { error = "Player not found in this session or not benched" });
+
+            _logger.LogInformation("Player {PlayerId} returned from bench in Session {SessionId}", playerId, sessionId);
+            return Ok(new { message = "Player returned from bench successfully" });
+        }
+
+        // 10.5) Return a player from bench straight back into the queue, atomically —
+        // if either step fails, neither happens, so a player can never end up stuck
+        // as "Available" when the intent was "Waiting".
+        [HttpPost("bench/{playerId}/return-to-queue")]
+        public async Task<ActionResult<QueueEntryDto>> ReturnToQueue(int sessionId, int playerId)
+        {
+            if (sessionId <= 0 || playerId <= 0) return BadRequest(new { error = "Invalid session ID or player ID" });
+
+            using var transaction = await _context.Database.BeginTransactionAsync();
+            try
+            {
+                var returned = await _sessionPlayerService.ReturnFromBenchAsync(sessionId, playerId);
+                if (returned == null)
+                {
+                    await transaction.RollbackAsync();
+                    return NotFound(new { error = "Player not found in this session or not benched" });
+                }
+
+                var entry = await _matchService.EnqueuePlayerAsync(sessionId, playerId);
+                await _context.SaveChangesAsync();
+                await transaction.CommitAsync();
+
+                _logger.LogInformation("Player {PlayerId} returned from bench and re-queued in Session {SessionId}", playerId, sessionId);
+                return Ok(_mapper.Map<QueueEntryDto>(entry));
+            }
+            catch (InvalidOperationException ex)
+            {
+                await transaction.RollbackAsync();
+                _logger.LogWarning(ex, "Failed to return player {PlayerId} to queue for session {SessionId}", playerId, sessionId);
+                return BadRequest(new { error = ex.Message });
+            }
+        }
+
+        // 11) Get benched players
+        [HttpGet("benched")]
+        public async Task<ActionResult<List<SessionPlayerDto>>> GetBenchedPlayers(int sessionId)
+        {
+            if (sessionId <= 0) return BadRequest(new { error = "Invalid session ID" });
+
+            var benched = await _sessionPlayerService.GetBenchPlayersAsync(sessionId);
+            return Ok(_mapper.Map<List<SessionPlayerDto>>(benched));
+        }
+    }
+}
+</file>
+
+<file path="Interfaces/Services/IMatchService.cs">
+using MixFlowWebApp.Models;
+
+namespace MixFlowWebApp.Interfaces.Services
+{
+    public interface IMatchService
+    {
+        // ---------------- Queue ----------------
+        Task<QueueEntry?> EnqueuePlayerAsync(int sessionId, int playerId);
+        Task<List<QueueEntry>> GetCurrentQueueAsync(int sessionId);
+        Task UpdateQueuePrioritiesAsync(int sessionId);
+        Task<bool> RemoveFromQueueAsync(int sessionId, int playerId);
+
+        // ---------------- Match Creation (randomized only) ----------------
+
+        // Promotes any prepared "next up" matches onto free courts and tops the
+        // next-up pool back up from the queue. This is the single entry point that
+        // keeps courts and the next-up queue full — called after every match result
+        // and by the manual "Auto Match" button.
+        Task AutoFillCourtsFromQueueAsync(int sessionId);
+
+        // Fills exactly one specific court — promotes the next "Ready" match if one is
+        // prepared, otherwise builds a fresh randomized match directly for that court.
+        Task<Match?> CreateMatchForCourtAsync(int sessionId, int courtNumber);
+
+        // ---------------- Next Up (Ready) matches ----------------
+
+        // The prepared, not-yet-started matches waiting for a free court (target: 2).
+        Task<List<Match>> GetNextUpMatchesAsync(int sessionId);
+
+        // ---------------- Editing a match (next-up OR currently in progress) ----------------
+
+        // Swap two players' team assignments within the same match. Works on a next-up
+        // match or one currently being played on a court; not on a completed one.
+        Task<Match> SwapMatchTeamsAsync(int sessionId, int matchId, int playerAId, int playerBId);
+
+        // Swap a player out of a match for a player currently waiting in the queue. Works
+        // on a next-up match or one currently being played on a court; not on a completed one.
+        Task<Match> SwapMatchWithQueueAsync(int sessionId, int matchId, int playerOutId, int playerInId);
+
+        // ---------------- Match Results ----------------
+        Task<Match> RecordMatchResultAsync(int sessionId, int courtNumber, int team1Score, int team2Score, List<int> team1Players, List<int> team2Players);
+        Task HandlePostMatchAsync(int sessionId, List<int> playerIds);
+
+        Task RecordPlayerMatchHistoryAsync(int matchId);
+        Task UpdatePlayerStatsAfterMatchAsync(int matchId);
+
+        Task<List<Match>> GetSessionMatchesAsync(int sessionId);
+        Task<List<Match>> GetActiveMatchesAsync(int sessionId);
     }
 }
 </file>
@@ -7947,6 +7291,780 @@ namespace MixFlowWebApp.Migrations
                     b.Navigation("SessionPlayers");
                 });
 #pragma warning restore 612, 618
+        }
+    }
+}
+</file>
+
+<file path="Program.cs">
+using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.IdentityModel.Tokens;
+using Microsoft.OpenApi.Models;
+using MixFlowWebApp.Data;
+using MixFlowWebApp.Interfaces.Services;
+using MixFlowWebApp.Interfaces.Services.Auth;
+using MixFlowWebApp.Mappings;
+using MixFlowWebApp.Services;
+using System.Text;
+using System.Text.Json.Serialization;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Add services to the container.
+builder.Services.AddControllers()
+    .AddJsonOptions(options =>
+    {
+        options.JsonSerializerOptions.ReferenceHandler = ReferenceHandler.IgnoreCycles;
+        options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;
+        options.JsonSerializerOptions.WriteIndented = true;
+    });
+
+//  EF core DbContext
+builder.Services.AddDbContext<MixFlowDbContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+// Add memory cache
+builder.Services.AddMemoryCache();
+
+//add automapper
+builder.Services.AddAutoMapper(config =>
+{
+    config.AddProfile<MappingProfile>();
+});
+
+// Services
+builder.Services.AddScoped<IOrganizerService, OrganizerService>();
+builder.Services.AddScoped<IPlayerService, PlayerService>();
+builder.Services.AddScoped<ISessionService, SessionService>();
+builder.Services.AddScoped<ISessionPlayerService, SessionPlayerService>();
+builder.Services.AddScoped<IMatchService, MatchService>();
+builder.Services.AddScoped<ILeaderboardService, LeaderboardService>();
+builder.Services.AddScoped<IJwtService, JwtService>();
+
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen(options =>
+{
+    options.SwaggerDoc("v1", new OpenApiInfo
+    {
+        Title = "MixFlow API",
+        Version = "v1",
+        Description = "Pickleball Stacking Management System"
+    });
+
+    options.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    {
+        Name = "Authorization",
+        Type = SecuritySchemeType.Http,
+        Scheme = "bearer",
+        BearerFormat = "JWT",
+        In = ParameterLocation.Header,
+        Description = "Enter 'Bearer' [space] and then your token"
+    });
+
+    options.AddSecurityRequirement(new OpenApiSecurityRequirement
+    {
+        {
+            new OpenApiSecurityScheme
+            {
+                Reference = new OpenApiReference
+                {
+                    Type = ReferenceType.SecurityScheme,
+                    Id = "Bearer"
+                }
+            },
+            Array.Empty<string>()
+        }
+    });
+});
+
+// JWT Authentication
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidateAudience = true,
+            ValidateLifetime = true,
+            ValidateIssuerSigningKey = true,
+            ValidIssuer = builder.Configuration["Jwt:Issuer"],
+            ValidAudience = builder.Configuration["Jwt:Audience"],
+            IssuerSigningKey = new SymmetricSecurityKey(
+                Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"] ??
+                    "SuperSecretKeyForDevelopmentOnly1234567890"))
+        };
+    });
+
+//CORS services with a policy for your frontend origin
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("FrontendPolicy", policy =>
+    {
+        var allowedOrigins = new List<string>
+        {
+            "http://localhost:5173",
+            "https://mix-flow-front-end.vercel.app"
+        };
+
+        policy.WithOrigins(allowedOrigins.ToArray())
+              .AllowAnyHeader()
+              .AllowAnyMethod();
+    });
+});
+
+var app = builder.Build();
+
+
+app.UseSwagger();
+app.UseSwaggerUI();
+
+app.UseHttpsRedirection();
+
+app.UseCors("FrontendPolicy");
+
+app.UseAuthentication();
+app.UseAuthorization();
+
+app.MapControllers();
+
+app.Run();
+</file>
+
+<file path="Services/MatchService.cs">
+using Microsoft.EntityFrameworkCore;
+using MixFlowWebApp.Constants;
+using MixFlowWebApp.Data;
+using MixFlowWebApp.Interfaces.Services;
+using MixFlowWebApp.Models;
+
+namespace MixFlowWebApp.Services
+{
+    public class MatchService : IMatchService
+    {
+        // How many prepared-but-not-started matches the "next up" queue tries to keep
+        // ready at all times, so the organizer always has a couple of cards to review
+        // or edit before they hit a court.
+        private const int TargetReadyMatchCount = 2;
+
+        private readonly MixFlowDbContext _context;
+        private readonly ILeaderboardService _leaderboardService;
+
+        public MatchService(MixFlowDbContext context, ILeaderboardService leaderboardService)
+        {
+            _context = context;
+            _leaderboardService = leaderboardService;
+        }
+
+        // ---------------- Queue Management ----------------
+
+        public async Task<QueueEntry?> EnqueuePlayerAsync(int sessionId, int playerId)
+        {
+            var session = await _context.Sessions.FirstOrDefaultAsync(s => s.SessionId == sessionId);
+            if (session == null || session.Status != "Active")
+                throw new InvalidOperationException("Session not found or not active.");
+
+            var sp = await _context.SessionPlayers
+                .FirstOrDefaultAsync(x => x.SessionId == sessionId && x.PlayerId == playerId && x.Status != "Benched");
+            if (sp == null)
+                throw new InvalidOperationException("Player is not checked into this session or is benched.");
+
+            var alreadyInMatch = await _context.MatchPlayers
+                .AnyAsync(mp => mp.PlayerId == playerId && mp.Match.SessionId == sessionId && mp.Match.Status != MatchStatus.Completed);
+            if (alreadyInMatch)
+                throw new InvalidOperationException("Player is currently in a match.");
+
+            return await UpsertWaitingQueueEntryAsync(sessionId, playerId);
+        }
+
+        public async Task<List<QueueEntry>> GetCurrentQueueAsync(int sessionId)
+        {
+            return await _context.QueueEntries
+                .Where(q => q.SessionId == sessionId && q.Status == "Waiting")
+                .Include(q => q.Player)
+                .OrderBy(q => q.Position)
+                .ThenBy(q => q.CheckInTime)
+                .ToListAsync();
+        }
+
+        public async Task UpdateQueuePrioritiesAsync(int sessionId)
+        {
+            var waiting = await _context.QueueEntries
+                .Where(q => q.SessionId == sessionId && q.Status == "Waiting")
+                .Include(q => q.Player)
+                .ToListAsync();
+
+            foreach (var q in waiting)
+            {
+                q.PriorityScore = CalculatePriority(q);
+            }
+
+            var ordered = waiting
+                .OrderByDescending(q => q.PriorityScore ?? 0m)
+                .ThenBy(q => q.CheckInTime)
+                .ToList();
+
+            for (int i = 0; i < ordered.Count; i++)
+            {
+                ordered[i].Position = i + 1;
+            }
+        }
+
+        public async Task<bool> RemoveFromQueueAsync(int sessionId, int playerId)
+        {
+            var entry = await _context.QueueEntries
+                .FirstOrDefaultAsync(q => q.SessionId == sessionId && q.PlayerId == playerId && q.Status == "Waiting");
+
+            if (entry == null) return false;
+
+            entry.Status = "Removed";
+            entry.Position = null;
+
+            return true;
+        }
+
+        // Puts a player back into the "Waiting" queue, reusing their existing QueueEntry
+        // row if they already have one for this session instead of inserting a new row.
+        // QueueEntry has a unique (SessionId, PlayerId) index, so a naive insert-if-not-
+        // "Waiting" check (as this used to be) throws a DB conflict — and therefore a 500 —
+        // the moment a player who already has a non-"Waiting" row (e.g. "Removed" from a
+        // bench, or "InMatch" from a prior match) gets queued again.
+        private async Task<QueueEntry> UpsertWaitingQueueEntryAsync(int sessionId, int playerId)
+        {
+            var existing = await _context.QueueEntries
+                .Include(q => q.Player)
+                .FirstOrDefaultAsync(q => q.SessionId == sessionId && q.PlayerId == playerId);
+
+            if (existing != null)
+            {
+                existing.Status = "Waiting";
+                existing.CheckInTime = DateTime.UtcNow;
+                existing.Position = null;
+                return existing;
+            }
+
+            var entry = new QueueEntry
+            {
+                SessionId = sessionId,
+                PlayerId = playerId,
+                Status = "Waiting",
+                CheckInTime = DateTime.UtcNow
+            };
+
+            _context.QueueEntries.Add(entry);
+            await _context.SaveChangesAsync();
+
+            return await _context.QueueEntries
+                .Include(q => q.Player)
+                .FirstAsync(q => q.QueueId == entry.QueueId);
+        }
+
+        // ---------------- Match Creation (randomized only) ----------------
+
+        public async Task AutoFillCourtsFromQueueAsync(int sessionId)
+        {
+            var session = await _context.Sessions.FirstOrDefaultAsync(s => s.SessionId == sessionId);
+            if (session == null || session.Status != "Active") return;
+
+            // Send whatever's already prepared to any free courts, top the next-up
+            // pool back up from the queue, then promote again in case the newly built
+            // matches can immediately cover courts that were still free.
+            await PromoteReadyMatchesToCourtsAsync(sessionId);
+            await EnsureReadyMatchesAsync(sessionId);
+            await PromoteReadyMatchesToCourtsAsync(sessionId);
+        }
+
+        // Fills exactly the requested court — never touches any other court, unlike
+        // AutoFillCourtsFromQueueAsync which fills every free court it can.
+        public async Task<Match?> CreateMatchForCourtAsync(int sessionId, int courtNumber)
+        {
+            var session = await _context.Sessions.FirstOrDefaultAsync(s => s.SessionId == sessionId);
+            if (session == null || session.Status != "Active")
+                throw new InvalidOperationException("Session not found or not active.");
+
+            if (courtNumber < 1 || courtNumber > session.NumberOfCourts)
+                throw new InvalidOperationException($"Court {courtNumber} is out of range for this session.");
+
+            var courtOccupied = await _context.Matches
+                .AnyAsync(m => m.SessionId == sessionId && m.CourtNumber == courtNumber && m.Status == MatchStatus.Active);
+            if (courtOccupied)
+                throw new InvalidOperationException($"Court {courtNumber} already has a match in progress.");
+
+            // Prefer a match that's already prepared and waiting in the next-up queue —
+            // send it straight to this court instead of building a brand new one.
+            var readyMatch = await _context.Matches
+                .Where(m => m.SessionId == sessionId && m.Status == MatchStatus.Ready)
+                .OrderBy(m => m.MatchId)
+                .FirstOrDefaultAsync();
+
+            if (readyMatch != null)
+            {
+                readyMatch.CourtNumber = courtNumber;
+                readyMatch.Status = MatchStatus.Active;
+                readyMatch.StartTime = DateTime.UtcNow;
+
+                await _context.SaveChangesAsync();
+                await EnsureReadyMatchesAsync(sessionId);
+
+                return readyMatch;
+            }
+
+            // Nothing prepared — build one directly for this court from the queue.
+            await UpdateQueuePrioritiesAsync(sessionId);
+
+            var queueEntries = await _context.QueueEntries
+                .Where(q => q.SessionId == sessionId && q.Status == "Waiting")
+                .Include(q => q.Player)
+                .OrderByDescending(q => q.PriorityScore)
+                .ThenBy(q => q.CheckInTime)
+                .ToListAsync();
+
+            var lockedPartnerByPlayerId = await _context.SessionPlayers
+                .Where(sp => sp.SessionId == sessionId && sp.LockedPartnerId != null)
+                .ToDictionaryAsync(sp => sp.PlayerId, sp => sp.LockedPartnerId!.Value);
+
+            var selectedPlayers = PickFourForNextCourt(queueEntries, lockedPartnerByPlayerId);
+            if (selectedPlayers.Count < 4) return null;
+
+            var match = new Match
+            {
+                SessionId = sessionId,
+                CourtNumber = courtNumber,
+                RotationMode = "RandomMix",
+                Status = MatchStatus.Active,
+                StartTime = DateTime.UtcNow,
+                IsCompleted = false
+            };
+
+            _context.Matches.Add(match);
+            await _context.SaveChangesAsync();
+
+            AssignTeams(match, selectedPlayers, lockedPartnerByPlayerId);
+
+            foreach (var entry in queueEntries.Where(q => selectedPlayers.Any(p => p.PlayerId == q.PlayerId)))
+            {
+                entry.Status = "InMatch";
+                entry.Position = null;
+            }
+
+            await _context.SaveChangesAsync();
+            await EnsureReadyMatchesAsync(sessionId);
+
+            return match;
+        }
+
+        // ---------------- Next Up (Ready) matches ----------------
+
+        public async Task<List<Match>> GetNextUpMatchesAsync(int sessionId)
+        {
+            return await _context.Matches
+                .Where(m => m.SessionId == sessionId && m.Status == MatchStatus.Ready)
+                .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
+                .OrderBy(m => m.MatchId)
+                .ToListAsync();
+        }
+
+        public async Task<Match> SwapMatchTeamsAsync(int sessionId, int matchId, int playerAId, int playerBId)
+        {
+            if (playerAId == playerBId)
+                throw new InvalidOperationException("Choose two different players to swap.");
+
+            var match = await _context.Matches
+                .Include(m => m.MatchPlayers)
+                .FirstOrDefaultAsync(m => m.MatchId == matchId && m.SessionId == sessionId);
+
+            if (match == null)
+                throw new InvalidOperationException("Match not found.");
+            if (match.Status == MatchStatus.Completed)
+                throw new InvalidOperationException("A completed match can't be edited.");
+
+            var mpA = match.MatchPlayers.FirstOrDefault(mp => mp.PlayerId == playerAId);
+            var mpB = match.MatchPlayers.FirstOrDefault(mp => mp.PlayerId == playerBId);
+
+            if (mpA == null || mpB == null)
+                throw new InvalidOperationException("Both players must currently be in this match.");
+            if (mpA.TeamNumber == mpB.TeamNumber)
+                throw new InvalidOperationException("Those two players are already on the same team.");
+
+            // Locking is symmetric (both sides point at each other), so checking one
+            // direction is enough.
+            var lockedToEachOther = await _context.SessionPlayers
+                .AnyAsync(sp => sp.SessionId == sessionId && sp.PlayerId == playerAId && sp.LockedPartnerId == playerBId);
+            if (lockedToEachOther)
+                throw new InvalidOperationException("These two players are locked as partners — unlock them first if you want to split them onto opposite teams.");
+
+            (mpA.TeamNumber, mpB.TeamNumber) = (mpB.TeamNumber, mpA.TeamNumber);
+
+            await _context.SaveChangesAsync();
+
+            return await _context.Matches
+                .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
+                .FirstAsync(m => m.MatchId == match.MatchId);
+        }
+
+        public async Task<Match> SwapMatchWithQueueAsync(int sessionId, int matchId, int playerOutId, int playerInId)
+        {
+            if (playerOutId == playerInId)
+                throw new InvalidOperationException("Choose two different players to swap.");
+
+            var match = await _context.Matches
+                .Include(m => m.MatchPlayers)
+                .FirstOrDefaultAsync(m => m.MatchId == matchId && m.SessionId == sessionId);
+
+            if (match == null)
+                throw new InvalidOperationException("Match not found.");
+            if (match.Status == MatchStatus.Completed)
+                throw new InvalidOperationException("A completed match can't be edited.");
+
+            var outgoing = match.MatchPlayers.FirstOrDefault(mp => mp.PlayerId == playerOutId);
+            if (outgoing == null)
+                throw new InvalidOperationException("That player isn't currently in this match.");
+
+            if (match.MatchPlayers.Any(mp => mp.PlayerId == playerInId))
+                throw new InvalidOperationException("That player is already in this match.");
+
+            var incomingQueueEntry = await _context.QueueEntries
+                .FirstOrDefaultAsync(q => q.SessionId == sessionId && q.PlayerId == playerInId && q.Status == "Waiting");
+            if (incomingQueueEntry == null)
+                throw new InvalidOperationException("That player isn't currently waiting in the queue.");
+
+            var teamNumber = outgoing.TeamNumber;
+
+            _context.MatchPlayers.Remove(outgoing);
+            _context.MatchPlayers.Add(new MatchPlayer { MatchId = match.MatchId, PlayerId = playerInId, TeamNumber = teamNumber });
+
+            incomingQueueEntry.Status = "InMatch";
+            incomingQueueEntry.Position = null;
+
+            await UpsertWaitingQueueEntryAsync(sessionId, playerOutId);
+
+            await _context.SaveChangesAsync();
+
+            return await _context.Matches
+                .Include(m => m.MatchPlayers).ThenInclude(mp => mp.Player)
+                .FirstAsync(m => m.MatchId == match.MatchId);
+        }
+
+        // Builds up to TargetReadyMatchCount "Ready" matches from the queue (no court
+        // assigned yet). Safe to call any time — it only tops the pool up, never removes
+        // from it.
+        private async Task EnsureReadyMatchesAsync(int sessionId)
+        {
+            var readyCount = await _context.Matches
+                .CountAsync(m => m.SessionId == sessionId && m.Status == MatchStatus.Ready);
+
+            if (readyCount >= TargetReadyMatchCount) return;
+
+            await UpdateQueuePrioritiesAsync(sessionId);
+
+            var queueEntries = await _context.QueueEntries
+                .Where(q => q.SessionId == sessionId && q.Status == "Waiting")
+                .Include(q => q.Player)
+                .OrderByDescending(q => q.PriorityScore)
+                .ThenBy(q => q.CheckInTime)
+                .ToListAsync();
+
+            var lockedPartnerByPlayerId = await _context.SessionPlayers
+                .Where(sp => sp.SessionId == sessionId && sp.LockedPartnerId != null)
+                .ToDictionaryAsync(sp => sp.PlayerId, sp => sp.LockedPartnerId!.Value);
+
+            var remainingQueue = new List<QueueEntry>(queueEntries);
+
+            while (readyCount < TargetReadyMatchCount)
+            {
+                var selectedPlayers = PickFourForNextCourt(remainingQueue, lockedPartnerByPlayerId);
+                if (selectedPlayers.Count < 4) break;
+
+                var match = new Match
+                {
+                    SessionId = sessionId,
+                    CourtNumber = null,
+                    RotationMode = "RandomMix",
+                    Status = MatchStatus.Ready,
+                    IsCompleted = false
+                };
+
+                _context.Matches.Add(match);
+                await _context.SaveChangesAsync();
+
+                AssignTeams(match, selectedPlayers, lockedPartnerByPlayerId);
+
+                foreach (var entry in remainingQueue.Where(q => selectedPlayers.Any(p => p.PlayerId == q.PlayerId)))
+                {
+                    entry.Status = "InMatch";
+                    entry.Position = null;
+                }
+
+                remainingQueue.RemoveAll(q => selectedPlayers.Any(p => p.PlayerId == q.PlayerId));
+                readyCount++;
+            }
+
+            await _context.SaveChangesAsync();
+        }
+
+        // Assigns any prepared "Ready" matches to free courts, oldest-first.
+        private async Task PromoteReadyMatchesToCourtsAsync(int sessionId)
+        {
+            var session = await _context.Sessions.FirstOrDefaultAsync(s => s.SessionId == sessionId);
+            if (session == null || session.Status != "Active") return;
+
+            var occupiedCourts = await _context.Matches
+                .Where(m => m.SessionId == sessionId && m.Status == MatchStatus.Active && m.CourtNumber.HasValue)
+                .Select(m => m.CourtNumber!.Value)
+                .ToListAsync();
+
+            var freeCourts = Enumerable.Range(1, session.NumberOfCourts)
+                .Where(c => !occupiedCourts.Contains(c))
+                .ToList();
+
+            if (freeCourts.Count == 0) return;
+
+            var readyMatches = await _context.Matches
+                .Where(m => m.SessionId == sessionId && m.Status == MatchStatus.Ready)
+                .OrderBy(m => m.MatchId)
+                .ToListAsync();
+
+            var readyQueue = new Queue<Match>(readyMatches);
+
+            foreach (var court in freeCourts)
+            {
+                if (readyQueue.Count == 0) break;
+
+                var next = readyQueue.Dequeue();
+                next.CourtNumber = court;
+                next.Status = MatchStatus.Active;
+                next.StartTime = DateTime.UtcNow;
+            }
+
+            await _context.SaveChangesAsync();
+        }
+
+        // Shared by EnsureReadyMatchesAsync and CreateMatchForCourtAsync so team
+        // assignment (including keeping locked pairs together) only lives in one place.
+        private void AssignTeams(Match match, List<Player> selectedPlayers, Dictionary<int, int> lockedPartnerByPlayerId)
+        {
+            var team1 = new List<Player>();
+            var team2 = new List<Player>();
+            foreach (var p in selectedPlayers)
+            {
+                var target = team1.Count <= team2.Count ? team1 : team2;
+                if (lockedPartnerByPlayerId.TryGetValue(p.PlayerId, out var partnerId)
+                    && selectedPlayers.Any(sp => sp.PlayerId == partnerId))
+                {
+                    target = team1.Count < 2 ? team1 : team2;
+                }
+                target.Add(p);
+            }
+
+            foreach (var p in team1)
+                _context.MatchPlayers.Add(new MatchPlayer { MatchId = match.MatchId, PlayerId = p.PlayerId, TeamNumber = 1 });
+            foreach (var p in team2)
+                _context.MatchPlayers.Add(new MatchPlayer { MatchId = match.MatchId, PlayerId = p.PlayerId, TeamNumber = 2 });
+        }
+
+        private List<Player> PickFourForNextCourt(List<QueueEntry> remainingQueue, Dictionary<int, int> lockedPartnerByPlayerId)
+        {
+            var selected = new List<Player>();
+            var selectedIds = new HashSet<int>();
+            var queuedPlayerIds = remainingQueue.Select(q => q.PlayerId).ToHashSet();
+            var consideredPairs = new HashSet<int>();
+
+            // Pass 1: pull in any complete locked pair first, wherever it sits in the queue.
+            foreach (var entry in remainingQueue)
+            {
+                if (selected.Count >= 4) break;
+                if (selectedIds.Contains(entry.PlayerId) || consideredPairs.Contains(entry.PlayerId)) continue;
+
+                if (lockedPartnerByPlayerId.TryGetValue(entry.PlayerId, out var partnerId) && queuedPlayerIds.Contains(partnerId))
+                {
+                    consideredPairs.Add(entry.PlayerId);
+                    consideredPairs.Add(partnerId);
+
+                    if (selected.Count <= 2)
+                    {
+                        var partnerEntry = remainingQueue.First(q => q.PlayerId == partnerId);
+                        selected.Add(entry.Player);
+                        selected.Add(partnerEntry.Player);
+                        selectedIds.Add(entry.PlayerId);
+                        selectedIds.Add(partnerId);
+                    }
+                }
+            }
+
+            // Pass 2: fill any remaining slots with whoever's next in normal queue order.
+            foreach (var entry in remainingQueue)
+            {
+                if (selected.Count >= 4) break;
+                if (selectedIds.Contains(entry.PlayerId)) continue;
+
+                selected.Add(entry.Player);
+                selectedIds.Add(entry.PlayerId);
+            }
+
+            return selected;
+        }
+
+        // ---------------- Match Results ----------------
+
+        public async Task<Match> RecordMatchResultAsync(int sessionId, int courtNumber, int team1Score, int team2Score, List<int> team1Players, List<int> team2Players)
+        {
+            var match = await _context.Matches
+                .Include(m => m.MatchPlayers)
+                .FirstOrDefaultAsync(m => m.SessionId == sessionId
+                               && m.CourtNumber == courtNumber
+                               && m.Status == MatchStatus.Active);
+
+            if (match == null)
+                throw new InvalidOperationException("Active match not found.");
+
+            match.Team1Score = team1Score;
+            match.Team2Score = team2Score;
+            match.IsCompleted = true;
+            match.Status = MatchStatus.Completed;
+            match.EndTime = DateTime.UtcNow;
+
+            _context.MatchPlayers.RemoveRange(match.MatchPlayers);
+
+            bool team1Won = team1Score > team2Score;
+            bool team2Won = team2Score > team1Score;
+
+            foreach (var playerId in team1Players)
+            {
+                _context.MatchPlayers.Add(new MatchPlayer
+                {
+                    MatchId = match.MatchId,
+                    PlayerId = playerId,
+                    TeamNumber = 1,
+                    IsWinner = team1Won
+                });
+            }
+
+            foreach (var playerId in team2Players)
+            {
+                _context.MatchPlayers.Add(new MatchPlayer
+                {
+                    MatchId = match.MatchId,
+                    PlayerId = playerId,
+                    TeamNumber = 2,
+                    IsWinner = team2Won
+                });
+            }
+
+            await _context.SaveChangesAsync();
+
+            await RecordPlayerMatchHistoryAsync(match.MatchId);
+            await UpdatePlayerStatsAfterMatchAsync(match.MatchId);
+
+            _leaderboardService.InvalidateOverallLeaderboardCache();
+
+            await HandlePostMatchAsync(sessionId, team1Players.Concat(team2Players).ToList());
+
+            return match;
+        }
+
+        public async Task HandlePostMatchAsync(int sessionId, List<int> playerIds)
+        {
+            foreach (var pid in playerIds)
+            {
+                await UpsertWaitingQueueEntryAsync(sessionId, pid);
+            }
+
+            await _context.SaveChangesAsync();
+
+            await UpdateQueuePrioritiesAsync(sessionId);
+            await AutoFillCourtsFromQueueAsync(sessionId);
+        }
+
+        public async Task RecordPlayerMatchHistoryAsync(int matchId)
+        {
+            var matchPlayers = await GetMatchPlayersAsync(matchId);
+
+            var team1 = matchPlayers.Where(mp => mp.TeamNumber == 1).ToList();
+            var team2 = matchPlayers.Where(mp => mp.TeamNumber == 2).ToList();
+
+            foreach (var mp in matchPlayers)
+            {
+                var history = new PlayerMatchHistory
+                {
+                    PlayerId = mp.PlayerId,
+                    MatchId = matchId,
+                    PlayedAt = DateTime.UtcNow,
+                    PartnerId = mp.TeamNumber == 1
+                        ? team1.FirstOrDefault(p => p.PlayerId != mp.PlayerId)?.PlayerId
+                        : team2.FirstOrDefault(p => p.PlayerId != mp.PlayerId)?.PlayerId
+                };
+
+                var opponents = mp.TeamNumber == 1 ? team2 : team1;
+                if (opponents.Count >= 1) history.Opponent1Id = opponents[0].PlayerId;
+                if (opponents.Count >= 2) history.Opponent2Id = opponents[1].PlayerId;
+
+                _context.PlayerMatchHistories.Add(history);
+            }
+
+            await _context.SaveChangesAsync();
+        }
+
+        public async Task UpdatePlayerStatsAfterMatchAsync(int matchId)
+        {
+            var matchPlayers = await GetMatchPlayersAsync(matchId);
+
+            foreach (var mp in matchPlayers)
+            {
+                var player = await _context.Players.FindAsync(mp.PlayerId);
+                if (player == null) continue;
+
+                player.GamesPlayed += 1;
+
+                if (mp.IsWinner == true)
+                    player.TotalWins += 1;
+                else
+                    player.TotalLosses += 1;
+
+                player.WinPercentage = player.GamesPlayed > 0
+                    ? Math.Round((decimal)player.TotalWins * 100 / player.GamesPlayed, 2)
+                    : 0;
+
+                player.UpdatedAt = DateTime.UtcNow;
+            }
+
+            await _context.SaveChangesAsync();
+        }
+
+        public async Task<List<Match>> GetSessionMatchesAsync(int sessionId)
+        {
+            return await _context.Matches
+                .Where(m => m.SessionId == sessionId && m.IsCompleted)
+                .Include(m => m.MatchPlayers)
+                    .ThenInclude(mp => mp.Player)
+                .OrderByDescending(m => m.EndTime)
+                .ToListAsync();
+        }
+
+        public async Task<List<Match>> GetActiveMatchesAsync(int sessionId)
+        {
+            return await _context.Matches
+                .Where(m => m.SessionId == sessionId && m.Status == MatchStatus.Active)
+                .Include(m => m.MatchPlayers)
+                    .ThenInclude(mp => mp.Player)
+                .OrderBy(m => m.StartTime)
+                .ToListAsync();
+        }
+
+        // ---------------- Helpers ----------------
+
+        private decimal CalculatePriority(QueueEntry entry)
+        {
+            var waiting = (decimal)(DateTime.UtcNow - entry.CheckInTime).TotalMinutes * 10m;
+            var skill = entry.Player.SkillLevel * 30m;
+            var winp = entry.Player.WinPercentage * 0.5m;
+            return waiting + skill + winp;
+        }
+
+        private async Task<List<MatchPlayer>> GetMatchPlayersAsync(int matchId)
+        {
+            return await _context.MatchPlayers
+                .Where(mp => mp.MatchId == matchId)
+                .ToListAsync();
         }
     }
 }

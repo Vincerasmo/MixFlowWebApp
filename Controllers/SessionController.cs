@@ -129,11 +129,17 @@ namespace MixFlowWebApp.Controllers
         {
             if (sessionId <= 0 || playerId <= 0) return BadRequest(new { error = "Invalid session ID or player ID" });
 
-            var sessionPlayer = await _sessionPlayerService.AddPlayerToSessionAsync(sessionId, playerId);
-            if (sessionPlayer == null) return NotFound(new { error = "Session or player not found" });
+            try
+            {
+                var sessionPlayer = await _sessionPlayerService.AddPlayerToSessionAsync(sessionId, playerId);
+                if (sessionPlayer == null) return NotFound(new { error = "Session or player not found" });
 
-            _logger.LogInformation("Player {PlayerId} added to Session {SessionId}", playerId, sessionId);
-            return CreatedAtAction(nameof(GetSessionPlayers), new { sessionId }, _mapper.Map<SessionPlayerDto>(sessionPlayer));
+                return CreatedAtAction(nameof(GetSessionPlayers), new { sessionId }, _mapper.Map<SessionPlayerDto>(sessionPlayer));
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Conflict(new { error = ex.Message });
+            }
         }
 
         /// Returns session players enriched with games-played-in-this-session and

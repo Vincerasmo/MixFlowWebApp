@@ -17,12 +17,14 @@ namespace MixFlowWebApp.Services
     public class SessionPlayerService : ISessionPlayerService
     {
         private readonly MixFlowDbContext _context;
-        private readonly IMatchService _matchService;   
+        private readonly IMatchService _matchService;
+        private readonly ILogger<SessionPlayerService> _logger;
 
-        public SessionPlayerService(MixFlowDbContext context, IMatchService matchService)
+        public SessionPlayerService(MixFlowDbContext context, IMatchService matchService, ILogger<SessionPlayerService> logger)
         {
             _context = context;
             _matchService = matchService;
+            _logger = logger;
         }
 
         /// Add a player to a session (check-in).
@@ -33,6 +35,19 @@ namespace MixFlowWebApp.Services
                 .FirstOrDefaultAsync(sp => sp.SessionId == sessionId && sp.PlayerId == playerId);
 
             if (existing != null) return existing;
+
+            // A player can only be checked into one Active session at a time. Without this,
+            // someone could end up queued, benched, or mid-match in two live sessions
+            // simultaneously — which corrupts queue state, stats, and match assignment
+            // for both sessions at once.
+            var alreadyInAnotherActiveSession = await _context.SessionPlayers
+                .Include(sp => sp.Session)
+                .AnyAsync(sp => sp.PlayerId == playerId
+                             && sp.SessionId != sessionId
+                             && sp.Session.Status == SessionStatus.Active);
+
+            if (alreadyInAnotherActiveSession)
+                throw new InvalidOperationException("This player is already checked into another active session.");
 
             var sessionPlayer = new SessionPlayer
             {
@@ -45,18 +60,24 @@ namespace MixFlowWebApp.Services
             _context.SessionPlayers.Add(sessionPlayer);
             await _context.SaveChangesAsync();
 
-            // Being added to the session and being in line to play are the same moment now —
-            // there's no longer a gap where a player is "checked in" but invisible everywhere
-            // on the Queue page.
+            // 🐛 FIX: this call went missing at some point — AddPlayerToSessionAsync was
+            // only ever setting Status = "CheckedIn" and stopping there. With no "add to
+            // queue" action left anywhere in the UI (that flow was removed on the
+            // assumption checking a player in AND queuing them were the same action now),
+            // a checked-in player had no path into the queue at all — they'd show up fine
+            // in "Manage Players" but never appear on the Queue page.
+            //
+            // Also logs instead of silently swallowing, unlike before — if this ever fails
+            // again (e.g. session isn't Active yet), it'll show up in the logs instead of
+            // vanishing without a trace.
             try
             {
                 await _matchService.EnqueuePlayerAsync(sessionId, playerId);
                 await _context.SaveChangesAsync();
             }
-            catch (InvalidOperationException)
+            catch (InvalidOperationException ex)
             {
-                // Session isn't Active yet, or similar — fine, they're still added to the
-                // roster, just not queued. Not worth failing the whole add-to-roster call over.
+                _logger.LogWarning(ex, "Player {PlayerId} added to Session {SessionId} but couldn't be auto-enqueued", playerId, sessionId);
             }
 
             return await _context.SessionPlayers
