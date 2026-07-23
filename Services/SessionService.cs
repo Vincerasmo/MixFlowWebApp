@@ -73,12 +73,30 @@ namespace MixFlowWebApp.Services
             var session = await _context.Sessions.FindAsync(sessionId);
             if (session == null) return null;
 
+            var newNumberOfCourts = updatedSession.NumberOfCourts != 0 ? updatedSession.NumberOfCourts : session.NumberOfCourts;
+
+            // Don't let the court count shrink below whatever court currently has a live
+            // match on it — that match would still exist in the database with no court
+            // card left to show it, orphaned from the Matches page entirely.
+            if (newNumberOfCourts < session.NumberOfCourts)
+            {
+                var highestOccupiedCourt = await _context.Matches
+                    .Where(m => m.SessionId == sessionId && !m.IsCompleted && m.CourtNumber != null)
+                    .MaxAsync(m => (int?)m.CourtNumber);
+
+                if (highestOccupiedCourt.HasValue && newNumberOfCourts < highestOccupiedCourt.Value)
+                {
+                    throw new InvalidOperationException(
+                        $"Can't reduce to {newNumberOfCourts} courts — Court {highestOccupiedCourt.Value} currently has a match in progress. Finish or end that match first.");
+                }
+            }
+
             // Update only non-null or non-default values
             session.SessionName = updatedSession.SessionName ?? session.SessionName;
             session.SessionDate = updatedSession.SessionDate != default ? updatedSession.SessionDate : session.SessionDate;
             session.StartTime = updatedSession.StartTime != default ? updatedSession.StartTime : session.StartTime;
             session.EndTime = updatedSession.EndTime != default ? updatedSession.EndTime : session.EndTime;
-            session.NumberOfCourts = updatedSession.NumberOfCourts != 0 ? updatedSession.NumberOfCourts : session.NumberOfCourts;
+            session.NumberOfCourts = newNumberOfCourts;
             session.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();

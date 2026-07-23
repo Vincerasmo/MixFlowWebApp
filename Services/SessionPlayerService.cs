@@ -125,24 +125,6 @@ namespace MixFlowWebApp.Services
             return sp;
         }
 
-        /// Get all players in a session (raw entities).
-        public async Task<List<SessionPlayer>> GetSessionPlayersAsync(int sessionId)
-        {
-            return await _context.SessionPlayers
-                .Where(sp => sp.SessionId == sessionId)
-                .Include(sp => sp.Player)
-                .ToListAsync();
-        }
-
-        /// Get all benched players in a session.
-        public async Task<List<SessionPlayer>> GetBenchPlayersAsync(int sessionId)
-        {
-            return await _context.SessionPlayers
-                .Where(sp => sp.SessionId == sessionId && sp.Status == SessionPlayerStatus.Benched)
-                .Include(sp => sp.Player)
-                .ToListAsync();
-        }
-
         /// Remove a player from a session. Also breaks their lock pair, if any, so their
         /// former partner isn't left pointing at a player no longer in this session.
         public async Task<bool> RemovePlayerFromSessionAsync(int sessionId, int playerId)

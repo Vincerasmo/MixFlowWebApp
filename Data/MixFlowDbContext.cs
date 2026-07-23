@@ -15,8 +15,6 @@ public class MixFlowDbContext : DbContext
     public DbSet<Match> Matches { get; set; }
     public DbSet<MatchPlayer> MatchPlayers { get; set; }
     public DbSet<PlayerMatchHistory> PlayerMatchHistories { get; set; }
-    public DbSet<Leaderboard> Leaderboards { get; set; }
-    public DbSet<LeaderboardEntry> LeaderboardEntries { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -74,17 +72,6 @@ public class MixFlowDbContext : DbContext
             .WithMany()
             .HasForeignKey(mp => mp.PlayerId)
             .OnDelete(DeleteBehavior.Cascade);
-
-        // Leaderboard Relationships
-        modelBuilder.Entity<LeaderboardEntry>()
-            .HasOne(le => le.Leaderboard)
-            .WithMany(l => l.Entries)
-            .HasForeignKey(le => le.LeaderboardId);
-
-        modelBuilder.Entity<LeaderboardEntry>()
-            .HasOne(le => le.Player)
-            .WithMany()
-            .HasForeignKey(le => le.PlayerId);
 
         // Indexes for better performance
         modelBuilder.Entity<SessionPlayer>()

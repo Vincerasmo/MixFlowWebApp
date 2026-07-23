@@ -100,12 +100,19 @@ namespace MixFlowWebApp.Controllers
             if (id <= 0) return BadRequest(new { error = "Invalid session ID" });
             if (!ModelState.IsValid) return BadRequest(new { error = "Invalid input" });
 
-            var updatedEntity = _mapper.Map<Session>(dto);
-            var session = await _sessionService.UpdateSessionAsync(id, updatedEntity);
-            if (session == null) return NotFound(new { error = $"Session with ID {id} not found" });
+            try
+            {
+                var updatedEntity = _mapper.Map<Session>(dto);
+                var session = await _sessionService.UpdateSessionAsync(id, updatedEntity);
+                if (session == null) return NotFound(new { error = $"Session with ID {id} not found" });
 
-            _logger.LogInformation("Session {SessionId} updated", id);
-            return Ok(_mapper.Map<SessionDto>(session));
+                _logger.LogInformation("Session {SessionId} updated", id);
+                return Ok(_mapper.Map<SessionDto>(session));
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Conflict(new { error = ex.Message });
+            }
         }
 
         [HttpPost("{id}/end")]

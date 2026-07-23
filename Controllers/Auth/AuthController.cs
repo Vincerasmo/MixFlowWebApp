@@ -1,12 +1,9 @@
 ﻿using AutoMapper;
-using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MixFlowWebApp.DTOs.AuthDTOs;
 using MixFlowWebApp.DTOs.OrganizerDTOs;
 using MixFlowWebApp.Interfaces.Services;
 using MixFlowWebApp.Interfaces.Services.Auth;
-using Swashbuckle.AspNetCore.Annotations;
-using System.Security.Claims;
 
 namespace MixFlowWebApp.Controllers.Auth
 {
@@ -133,20 +130,6 @@ namespace MixFlowWebApp.Controllers.Auth
                 Organizer = organizerDto,
                 Message = "Signup successful!"
             });
-        }
-
-        [HttpGet("me")]
-        [Authorize]
-        public async Task<ActionResult<OrganizerDto>> GetCurrentOrganizer()
-        {
-            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrEmpty(userId)) return Unauthorized(new { error = "User not authenticated" });
-
-            var organizer = await _organizerService.GetOrganizerByUserIdAsync(userId);
-            if (organizer == null) return NotFound(new { error = "Organizer not found" });
-
-            var organizerDto = _mapper.Map<OrganizerDto>(organizer);
-            return Ok(organizerDto);
         }
     }
 }

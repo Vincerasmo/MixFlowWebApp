@@ -1,8 +1,7 @@
 ﻿using AutoMapper;
-using MixFlowWebApp.DTOs.LeaderboardDTOs;
 using MixFlowWebApp.DTOs.MatchDTOs;
 using MixFlowWebApp.DTOs.OrganizerDTOs;
-using MixFlowWebApp.DTOs.PlayerDTOs;        
+using MixFlowWebApp.DTOs.PlayerDTOs;
 using MixFlowWebApp.DTOs.QueueEntryDTOs;
 using MixFlowWebApp.DTOs.SessionDTOs;
 using MixFlowWebApp.DTOs.SessionPlayerDTOs;
@@ -54,12 +53,6 @@ namespace MixFlowWebApp.Mappings
 
             CreateMap<MatchPlayer, MatchPlayerDto>()
                 .ForMember(dest => dest.FullName, opt => opt.MapFrom(src => src.Player.FullName));
-
-            // Leaderboard Mappings
-            CreateMap<Player, LeaderboardPlayerDto>()
-            .ForMember(dest => dest.FullName, opt => opt.MapFrom(src => src.FullName))
-            .ForMember(dest => dest.Wins, opt => opt.MapFrom(src => src.TotalWins))
-            .ForMember(dest => dest.GamesPlayed, opt => opt.MapFrom(src => src.GamesPlayed));
 
             // Match Result (DTO to Entity is handled manually in service)
         }

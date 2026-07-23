@@ -35,28 +35,7 @@ namespace MixFlowWebApp.Controllers
             _context = context;
         }
 
-        // 1) Enqueue player
-        [HttpPost("enqueue/{playerId}")]
-        public async Task<ActionResult<QueueEntryDto>> EnqueuePlayer(int sessionId, int playerId)
-        {
-            using var transaction = await _context.Database.BeginTransactionAsync();
-            try
-            {
-                var entry = await _matchService.EnqueuePlayerAsync(sessionId, playerId);
-                await _context.SaveChangesAsync();
-                await transaction.CommitAsync();
-
-                return Ok(_mapper.Map<QueueEntryDto>(entry));
-            }
-            catch (InvalidOperationException ex)
-            {
-                await transaction.RollbackAsync();
-                _logger.LogWarning(ex, "Failed to enqueue player {PlayerId} for session {SessionId}", playerId, sessionId);
-                return BadRequest(new { error = ex.Message });
-            }
-        }
-
-        // 2) View queue
+        // 1) View queue
         [HttpGet("queue")]
         public async Task<ActionResult<List<QueueEntryDto>>> GetQueue(int sessionId)
         {
@@ -64,7 +43,7 @@ namespace MixFlowWebApp.Controllers
             return Ok(_mapper.Map<List<QueueEntryDto>>(items));
         }
 
-        // 3) Auto-match: promote next-up matches to free courts and top the next-up
+        // 2) Auto-match: promote next-up matches to free courts and top the next-up
         // queue back up to 2 prepared matches.
         [HttpPost("auto-match")]
         public async Task<IActionResult> AutoMatch(int sessionId)
@@ -85,7 +64,7 @@ namespace MixFlowWebApp.Controllers
             }
         }
 
-        // 4) Fill exactly one specific court from the queue — unlike auto-match, this
+        // 3) Fill exactly one specific court from the queue — unlike auto-match, this
         // never touches any other court, even if several are free at once. Promotes an
         // already-prepared next-up match if one exists, otherwise builds a fresh one.
         [HttpPost("court/{courtNumber}/smart-mix")]
@@ -118,7 +97,7 @@ namespace MixFlowWebApp.Controllers
             }
         }
 
-        // 5) Record result for a specific match
+        // 4) Record result for a specific match
         [HttpPost("record-result")]
         public async Task<IActionResult> RecordResult(int sessionId, [FromBody] MatchResultDto dto)
         {
@@ -155,24 +134,7 @@ namespace MixFlowWebApp.Controllers
             }
         }
 
-        // 6) Remove player from queue
-        [HttpDelete("queue/{playerId}")]
-        public async Task<IActionResult> RemoveFromQueue(int sessionId, int playerId)
-        {
-            using var transaction = await _context.Database.BeginTransactionAsync();
-            var removed = await _matchService.RemoveFromQueueAsync(sessionId, playerId);
-            if (!removed)
-            {
-                await transaction.RollbackAsync();
-                return NotFound(new { error = "Player not found in queue." });
-            }
-
-            await _context.SaveChangesAsync();
-            await transaction.CommitAsync();
-            return Ok(new { message = $"Player {playerId} removed from queue." });
-        }
-
-        // 7) Get completed matches
+        // 5) Get completed matches
         [HttpGet("completed")]
         public async Task<ActionResult<List<MatchDto>>> GetCompletedMatches(int sessionId)
         {
@@ -180,7 +142,7 @@ namespace MixFlowWebApp.Controllers
             return Ok(_mapper.Map<List<MatchDto>>(matches));
         }
 
-        // 8) Get active (on-court, in-progress) matches
+        // 6) Get active (on-court, in-progress) matches
         [HttpGet("active")]
         public async Task<ActionResult<List<MatchDto>>> GetActiveMatches(int sessionId)
         {
@@ -188,7 +150,7 @@ namespace MixFlowWebApp.Controllers
             return Ok(_mapper.Map<List<MatchDto>>(matches));
         }
 
-        // 8.5) Get "next up" matches — prepared, not yet on a court (target: 2). This is
+        // 7) Get "next up" matches — prepared, not yet on a court (target: 2). This is
         // what the queue page's next-up cards should render from.
         [HttpGet("next-up")]
         public async Task<ActionResult<List<MatchDto>>> GetNextUpMatches(int sessionId)
@@ -197,7 +159,7 @@ namespace MixFlowWebApp.Controllers
             return Ok(_mapper.Map<List<MatchDto>>(matches));
         }
 
-        // 8.6) Edit a match's teams: swap two players between Team 1 and Team 2. Works on
+        // 8) Edit a match's teams: swap two players between Team 1 and Team 2. Works on
         // a next-up match or the match currently on a court (not a completed one). Route
         // kept as "next-up/..." for frontend compatibility even though it now also
         // applies to in-progress matches.
@@ -220,7 +182,7 @@ namespace MixFlowWebApp.Controllers
             }
         }
 
-        // 8.7) Edit a match: swap one of its players out for a player currently waiting in
+        // 9) Edit a match: swap one of its players out for a player currently waiting in
         // the queue. The bumped player goes back to the queue. Works on a next-up match or
         // the match currently on a court (not a completed one).
         [HttpPut("next-up/{matchId}/swap-with-queue")]
@@ -242,7 +204,7 @@ namespace MixFlowWebApp.Controllers
             }
         }
 
-        // 9) Bench a player — also pulls them out of the queue if they were waiting,
+        // 10) Bench a player — also pulls them out of the queue if they were waiting,
         // so a benched player can never still show up as "in line" for a match.
         [HttpPost("bench")]
         public async Task<ActionResult> BenchPlayer(int sessionId, [FromBody] BenchPlayerDto dto)
@@ -268,20 +230,7 @@ namespace MixFlowWebApp.Controllers
             return Ok(new { message = "Player benched successfully", reason = dto.Reason });
         }
 
-        // 10) Return a player from bench
-        [HttpPost("bench/{playerId}/return")]
-        public async Task<ActionResult> ReturnFromBench(int sessionId, int playerId)
-        {
-            if (sessionId <= 0 || playerId <= 0) return BadRequest(new { error = "Invalid session ID or player ID" });
-
-            var result = await _sessionPlayerService.ReturnFromBenchAsync(sessionId, playerId);
-            if (result == null) return NotFound(new { error = "Player not found in this session or not benched" });
-
-            _logger.LogInformation("Player {PlayerId} returned from bench in Session {SessionId}", playerId, sessionId);
-            return Ok(new { message = "Player returned from bench successfully" });
-        }
-
-        // 10.5) Return a player from bench straight back into the queue, atomically —
+        // 11) Return a player from bench straight back into the queue, atomically —
         // if either step fails, neither happens, so a player can never end up stuck
         // as "Available" when the intent was "Waiting".
         [HttpPost("bench/{playerId}/return-to-queue")]
@@ -314,14 +263,5 @@ namespace MixFlowWebApp.Controllers
             }
         }
 
-        // 11) Get benched players
-        [HttpGet("benched")]
-        public async Task<ActionResult<List<SessionPlayerDto>>> GetBenchedPlayers(int sessionId)
-        {
-            if (sessionId <= 0) return BadRequest(new { error = "Invalid session ID" });
-
-            var benched = await _sessionPlayerService.GetBenchPlayersAsync(sessionId);
-            return Ok(_mapper.Map<List<SessionPlayerDto>>(benched));
-        }
     }
 }

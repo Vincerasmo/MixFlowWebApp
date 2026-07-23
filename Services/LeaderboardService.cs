@@ -3,7 +3,6 @@ using Microsoft.Extensions.Caching.Memory;
 using MixFlowWebApp.Data;
 using MixFlowWebApp.DTOs.LeaderboardDTOs;
 using MixFlowWebApp.Interfaces.Services;
-using MixFlowWebApp.Models;
 
 namespace MixFlowWebApp.Services
 {
@@ -24,25 +23,42 @@ namespace MixFlowWebApp.Services
         // ---------------- Session Leaderboard ----------------
         public async Task<List<LeaderboardPlayerDto>> GetSessionLeaderboardAsync(int sessionId)
         {
-            var players = await _context.SessionPlayers
-                .Where(sp => sp.SessionId == sessionId)
-                .Select(sp => new LeaderboardPlayerDto
+            // Scoped to matches actually played in THIS session, not the player's career totals.
+            var sessionStats = await _context.MatchPlayers
+                .Where(mp => mp.Match.SessionId == sessionId && mp.Match.IsCompleted)
+                .GroupBy(mp => mp.PlayerId)
+                .Select(g => new
                 {
-                    PlayerId = sp.PlayerId,
-                    FullName = sp.Player.FullName,
-                    GamesPlayed = sp.Player.GamesPlayed,
-                    Wins = sp.Player.TotalWins,
-                    Losses = sp.Player.TotalLosses,
-                    WinPercentage = sp.Player.WinPercentage,
-                    SkillLevel = sp.Player.SkillLevel
+                    PlayerId = g.Key,
+                    GamesPlayed = g.Count(),
+                    Wins = g.Count(x => x.IsWinner == true),
+                    Losses = g.Count(x => x.IsWinner == false)
+                })
+                .ToListAsync();
+
+            var playerIds = sessionStats.Select(s => s.PlayerId).ToList();
+            var playerInfo = await _context.Players
+                .Where(p => playerIds.Contains(p.PlayerId))
+                .ToDictionaryAsync(p => p.PlayerId, p => p);
+
+            var players = sessionStats
+                .Where(s => playerInfo.ContainsKey(s.PlayerId))
+                .Select(s => new LeaderboardPlayerDto
+                {
+                    PlayerId = s.PlayerId,
+                    FullName = playerInfo[s.PlayerId].FullName,
+                    GamesPlayed = s.GamesPlayed,
+                    Wins = s.Wins,
+                    Losses = s.Losses,
+                    WinPercentage = s.GamesPlayed > 0 ? Math.Round((decimal)s.Wins * 100 / s.GamesPlayed, 2) : 0,
+                    SkillLevel = playerInfo[s.PlayerId].SkillLevel
                 })
                 .OrderByDescending(p => p.Wins)
                 .ThenByDescending(p => p.WinPercentage)
                 .ThenByDescending(p => p.SkillLevel)
                 .Take(SessionLeaderboardLimit)
-                .ToListAsync();
+                .ToList();
 
-            // ✅ Assign rank based on sorted order
             int rank = 1;
             foreach (var player in players)
             {
@@ -52,7 +68,6 @@ namespace MixFlowWebApp.Services
             return players;
         }
 
-        // ---------------- Overall Leaderboard ----------------
         // ---------------- Overall Leaderboard (weekly, resets every Sunday) ----------------
         public async Task<List<LeaderboardPlayerDto>> GetOverallLeaderboardAsync()
         {
@@ -118,42 +133,6 @@ namespace MixFlowWebApp.Services
         {
             var diff = (int)utcNow.Date.DayOfWeek; // Sunday = 0
             return utcNow.Date.AddDays(-diff);
-        }
-
-        // ---------------- Snapshots ----------------
-        public async Task SaveSessionLeaderboardSnapshotAsync(int sessionId)
-        {
-            var players = await GetSessionLeaderboardAsync(sessionId);
-
-            var leaderboard = new Leaderboard
-            {
-                Type = "Session",
-                SessionId = sessionId,
-                GeneratedAt = DateTime.UtcNow,
-                Entries = players.Select(p => new LeaderboardEntry
-                {
-                    PlayerId = p.PlayerId,
-                    WinPercentage = p.WinPercentage,
-                    GamesPlayed = p.GamesPlayed,
-                    SkillLevel = p.SkillLevel,
-                    Wins = p.Wins,
-                    Losses = p.Losses,
-                    Rank = p.Rank
-                }).ToList()
-            };
-
-            _context.Leaderboards.Add(leaderboard);
-            await _context.SaveChangesAsync();
-        }
-
-        public async Task<List<Leaderboard>> GetSessionLeaderboardSnapshotsAsync(int sessionId)
-        {
-            return await _context.Leaderboards
-                .Include(l => l.Entries)
-                .ThenInclude(e => e.Player)
-                .Where(l => l.Type == "Session" && l.SessionId == sessionId)
-                .OrderByDescending(l => l.GeneratedAt)
-                .ToListAsync();
         }
     }
 }

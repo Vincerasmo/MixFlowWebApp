@@ -71,6 +71,18 @@ namespace MixFlowWebApp.Controllers
             return Ok(_mapper.Map<List<MatchDto>>(matches));
         }
 
+        // NEW: the prepared, not-yet-started "next up" matches (target: 2) — same data
+        // the organizer's Queue page shows, just read-only here.
+        [HttpGet("{sessionId}/matches/next-up")]
+        public async Task<ActionResult<List<MatchDto>>> GetNextUpMatches(int sessionId)
+        {
+            var session = await _sessionService.GetSessionByIdAsync(sessionId);
+            if (session == null) return NotFound(new { error = "Session not found." });
+
+            var matches = await _matchService.GetNextUpMatchesAsync(sessionId);
+            return Ok(_mapper.Map<List<MatchDto>>(matches));
+        }
+
         [HttpGet("{sessionId}/matches/completed")]
         public async Task<ActionResult<List<MatchDto>>> GetCompletedMatches(int sessionId)
         {

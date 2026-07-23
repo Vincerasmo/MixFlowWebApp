@@ -59,7 +59,6 @@ DTOs/AuthDTOs/AuthResponseDto.cs
 DTOs/AuthDTOs/EmailLoginDto.cs
 DTOs/AuthDTOs/EmailSignupDto.cs
 DTOs/AuthDTOs/GoogleLoginDto.cs
-DTOs/LeaderboardDTOs/LeaderboardDto.cs
 DTOs/LeaderboardDTOs/LeaderboardPlayerDto.cs
 DTOs/MatchDTOs/MatchDto.cs
 DTOs/MatchDTOs/MatchPlayerDto.cs
@@ -99,8 +98,6 @@ Migrations/MixFlowDbContextModelSnapshot.cs
 MixFlowWebApp.csproj
 MixFlowWebApp.http
 MixFlowWebApp.sln
-Models/Leaderboard.cs
-Models/LeaderboardEntry.cs
 Models/Match.cs
 Models/MatchPlayer.cs
 Models/Organizer.cs
@@ -122,103 +119,6 @@ Services/SessionService.cs
 
 <files>
 This section contains the contents of the repository's files.
-
-<file path="Controllers/PublicController.cs">
-using AutoMapper;
-using Microsoft.AspNetCore.Mvc;
-using MixFlowWebApp.DTOs.LeaderboardDTOs;
-using MixFlowWebApp.DTOs.MatchDTOs;
-using MixFlowWebApp.DTOs.QueueEntryDTOs;
-using MixFlowWebApp.Interfaces.Services;
-
-namespace MixFlowWebApp.Controllers
-{
-    // No [Authorize] anywhere in this controller — every action here is intentionally
-    // public and read-only, for the spectator "watch" link players open with no login
-    // (see WatchPage.tsx / /watch/:sessionId on the frontend). Never add a write action
-    // to this controller; if it needs a POST/PUT/DELETE, it belongs in an authenticated
-    // controller instead.
-    [ApiController]
-    [Route("api/public/sessions")]
-    public class PublicController : ControllerBase
-    {
-        private readonly ISessionService _sessionService;
-        private readonly IMatchService _matchService;
-        private readonly ILeaderboardService _leaderboardService;
-        private readonly IMapper _mapper;
-
-        public PublicController(
-            ISessionService sessionService,
-            IMatchService matchService,
-            ILeaderboardService leaderboardService,
-            IMapper mapper)
-        {
-            _sessionService = sessionService;
-            _matchService = matchService;
-            _leaderboardService = leaderboardService;
-            _mapper = mapper;
-        }
-
-        // Deliberately NOT mapping the full SessionDto here — only the fields a spectator
-        // actually needs. SessionDto may carry organizer-facing fields over time that
-        // shouldn't be exposed on a link anyone can open without logging in.
-        [HttpGet("{sessionId}")]
-        public async Task<ActionResult> GetSession(int sessionId)
-        {
-            var session = await _sessionService.GetSessionByIdAsync(sessionId);
-            if (session == null) return NotFound(new { error = "Session not found." });
-
-            return Ok(new
-            {
-                sessionId = session.SessionId,
-                sessionName = session.SessionName,
-                numberOfCourts = session.NumberOfCourts,
-                status = session.Status
-            });
-        }
-
-        [HttpGet("{sessionId}/queue")]
-        public async Task<ActionResult<List<QueueEntryDto>>> GetQueue(int sessionId)
-        {
-            var session = await _sessionService.GetSessionByIdAsync(sessionId);
-            if (session == null) return NotFound(new { error = "Session not found." });
-
-            var queue = await _matchService.GetCurrentQueueAsync(sessionId);
-            return Ok(_mapper.Map<List<QueueEntryDto>>(queue));
-        }
-
-        [HttpGet("{sessionId}/matches/active")]
-        public async Task<ActionResult<List<MatchDto>>> GetActiveMatches(int sessionId)
-        {
-            var session = await _sessionService.GetSessionByIdAsync(sessionId);
-            if (session == null) return NotFound(new { error = "Session not found." });
-
-            var matches = await _matchService.GetActiveMatchesAsync(sessionId);
-            return Ok(_mapper.Map<List<MatchDto>>(matches));
-        }
-
-        [HttpGet("{sessionId}/matches/completed")]
-        public async Task<ActionResult<List<MatchDto>>> GetCompletedMatches(int sessionId)
-        {
-            var session = await _sessionService.GetSessionByIdAsync(sessionId);
-            if (session == null) return NotFound(new { error = "Session not found." });
-
-            var matches = await _matchService.GetSessionMatchesAsync(sessionId);
-            return Ok(_mapper.Map<List<MatchDto>>(matches));
-        }
-
-        [HttpGet("{sessionId}/leaderboard")]
-        public async Task<ActionResult<List<LeaderboardPlayerDto>>> GetLeaderboard(int sessionId)
-        {
-            var session = await _sessionService.GetSessionByIdAsync(sessionId);
-            if (session == null) return NotFound(new { error = "Session not found." });
-
-            var leaderboard = await _leaderboardService.GetSessionLeaderboardAsync(sessionId);
-            return Ok(leaderboard);
-        }
-    }
-}
-</file>
 
 <file path=".config/dotnet-tools.json">
 {
@@ -829,6 +729,115 @@ namespace MixFlowWebApp.Controllers
 }
 </file>
 
+<file path="Controllers/PublicController.cs">
+using AutoMapper;
+using Microsoft.AspNetCore.Mvc;
+using MixFlowWebApp.DTOs.LeaderboardDTOs;
+using MixFlowWebApp.DTOs.MatchDTOs;
+using MixFlowWebApp.DTOs.QueueEntryDTOs;
+using MixFlowWebApp.Interfaces.Services;
+
+namespace MixFlowWebApp.Controllers
+{
+    // No [Authorize] anywhere in this controller — every action here is intentionally
+    // public and read-only, for the spectator "watch" link players open with no login
+    // (see WatchPage.tsx / /watch/:sessionId on the frontend). Never add a write action
+    // to this controller; if it needs a POST/PUT/DELETE, it belongs in an authenticated
+    // controller instead.
+    [ApiController]
+    [Route("api/public/sessions")]
+    public class PublicController : ControllerBase
+    {
+        private readonly ISessionService _sessionService;
+        private readonly IMatchService _matchService;
+        private readonly ILeaderboardService _leaderboardService;
+        private readonly IMapper _mapper;
+
+        public PublicController(
+            ISessionService sessionService,
+            IMatchService matchService,
+            ILeaderboardService leaderboardService,
+            IMapper mapper)
+        {
+            _sessionService = sessionService;
+            _matchService = matchService;
+            _leaderboardService = leaderboardService;
+            _mapper = mapper;
+        }
+
+        // Deliberately NOT mapping the full SessionDto here — only the fields a spectator
+        // actually needs. SessionDto may carry organizer-facing fields over time that
+        // shouldn't be exposed on a link anyone can open without logging in.
+        [HttpGet("{sessionId}")]
+        public async Task<ActionResult> GetSession(int sessionId)
+        {
+            var session = await _sessionService.GetSessionByIdAsync(sessionId);
+            if (session == null) return NotFound(new { error = "Session not found." });
+
+            return Ok(new
+            {
+                sessionId = session.SessionId,
+                sessionName = session.SessionName,
+                numberOfCourts = session.NumberOfCourts,
+                status = session.Status
+            });
+        }
+
+        [HttpGet("{sessionId}/queue")]
+        public async Task<ActionResult<List<QueueEntryDto>>> GetQueue(int sessionId)
+        {
+            var session = await _sessionService.GetSessionByIdAsync(sessionId);
+            if (session == null) return NotFound(new { error = "Session not found." });
+
+            var queue = await _matchService.GetCurrentQueueAsync(sessionId);
+            return Ok(_mapper.Map<List<QueueEntryDto>>(queue));
+        }
+
+        [HttpGet("{sessionId}/matches/active")]
+        public async Task<ActionResult<List<MatchDto>>> GetActiveMatches(int sessionId)
+        {
+            var session = await _sessionService.GetSessionByIdAsync(sessionId);
+            if (session == null) return NotFound(new { error = "Session not found." });
+
+            var matches = await _matchService.GetActiveMatchesAsync(sessionId);
+            return Ok(_mapper.Map<List<MatchDto>>(matches));
+        }
+
+        // NEW: the prepared, not-yet-started "next up" matches (target: 2) — same data
+        // the organizer's Queue page shows, just read-only here.
+        [HttpGet("{sessionId}/matches/next-up")]
+        public async Task<ActionResult<List<MatchDto>>> GetNextUpMatches(int sessionId)
+        {
+            var session = await _sessionService.GetSessionByIdAsync(sessionId);
+            if (session == null) return NotFound(new { error = "Session not found." });
+
+            var matches = await _matchService.GetNextUpMatchesAsync(sessionId);
+            return Ok(_mapper.Map<List<MatchDto>>(matches));
+        }
+
+        [HttpGet("{sessionId}/matches/completed")]
+        public async Task<ActionResult<List<MatchDto>>> GetCompletedMatches(int sessionId)
+        {
+            var session = await _sessionService.GetSessionByIdAsync(sessionId);
+            if (session == null) return NotFound(new { error = "Session not found." });
+
+            var matches = await _matchService.GetSessionMatchesAsync(sessionId);
+            return Ok(_mapper.Map<List<MatchDto>>(matches));
+        }
+
+        [HttpGet("{sessionId}/leaderboard")]
+        public async Task<ActionResult<List<LeaderboardPlayerDto>>> GetLeaderboard(int sessionId)
+        {
+            var session = await _sessionService.GetSessionByIdAsync(sessionId);
+            if (session == null) return NotFound(new { error = "Session not found." });
+
+            var leaderboard = await _leaderboardService.GetSessionLeaderboardAsync(sessionId);
+            return Ok(leaderboard);
+        }
+    }
+}
+</file>
+
 <file path="Data/MixFlowDbContext.cs">
 namespace MixFlowWebApp.Data;
 using Microsoft.EntityFrameworkCore;
@@ -847,8 +856,6 @@ public class MixFlowDbContext : DbContext
     public DbSet<Match> Matches { get; set; }
     public DbSet<MatchPlayer> MatchPlayers { get; set; }
     public DbSet<PlayerMatchHistory> PlayerMatchHistories { get; set; }
-    public DbSet<Leaderboard> Leaderboards { get; set; }
-    public DbSet<LeaderboardEntry> LeaderboardEntries { get; set; }
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -906,17 +913,6 @@ public class MixFlowDbContext : DbContext
             .WithMany()
             .HasForeignKey(mp => mp.PlayerId)
             .OnDelete(DeleteBehavior.Cascade);
-
-        // Leaderboard Relationships
-        modelBuilder.Entity<LeaderboardEntry>()
-            .HasOne(le => le.Leaderboard)
-            .WithMany(l => l.Entries)
-            .HasForeignKey(le => le.LeaderboardId);
-
-        modelBuilder.Entity<LeaderboardEntry>()
-            .HasOne(le => le.Player)
-            .WithMany()
-            .HasForeignKey(le => le.PlayerId);
 
         // Indexes for better performance
         modelBuilder.Entity<SessionPlayer>()
@@ -992,17 +988,6 @@ namespace MixFlowWebApp.DTOs.AuthDTOs
         public string UserId { get; set; } = string.Empty;
         public string Email { get; set; } = string.Empty;
         public string? FullName { get; set; }
-    }
-}
-</file>
-
-<file path="DTOs/LeaderboardDTOs/LeaderboardDto.cs">
-namespace MixFlowWebApp.DTOs.LeaderboardDTOs
-{
-    public class LeaderboardDto
-    {
-        public List<LeaderboardPlayerDto> SessionLeaders { get; set; } = new();
-        public List<LeaderboardPlayerDto> OverallLeaders { get; set; } = new();
     }
 }
 </file>
@@ -1139,6 +1124,10 @@ namespace MixFlowWebApp.DTOs.SessionDTOs
     {
         public string? SessionName { get; set; }
         public string? Status { get; set; }
+        public DateTime? SessionDate { get; set; }
+        public TimeSpan? StartTime { get; set; }
+        public TimeSpan? EndTime { get; set; }
+        public int? NumberOfCourts { get; set; }
     }
 }
 </file>
@@ -4518,29 +4507,6 @@ Global
 EndGlobal
 </file>
 
-<file path="Models/LeaderboardEntry.cs">
-namespace MixFlowWebApp.Models
-{
-    public class LeaderboardEntry
-    {
-        public int LeaderboardEntryId { get; set; }  // Primary key
-        public int LeaderboardId { get; set; }       // FK to Leaderboard
-        public int PlayerId { get; set; }            // FK to Player
-
-        public decimal WinPercentage { get; set; }
-        public int GamesPlayed { get; set; }
-        public decimal SkillLevel { get; set; }
-        public int Wins { get; set; }
-        public int Losses { get; set; }
-        public int Rank { get; set; }                // Position in leaderboard
-
-        // Navigation properties
-        public Leaderboard? Leaderboard { get; set; }
-        public Player? Player { get; set; }
-    }
-}
-</file>
-
 <file path="Models/MatchPlayer.cs">
 namespace MixFlowWebApp.Models
 {
@@ -4732,14 +4698,11 @@ namespace MixFlowWebApp.Services
 
 <file path="Controllers/Auth/AuthController.cs">
 using AutoMapper;
-using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using MixFlowWebApp.DTOs.AuthDTOs;
 using MixFlowWebApp.DTOs.OrganizerDTOs;
 using MixFlowWebApp.Interfaces.Services;
 using MixFlowWebApp.Interfaces.Services.Auth;
-using Swashbuckle.AspNetCore.Annotations;
-using System.Security.Claims;
 
 namespace MixFlowWebApp.Controllers.Auth
 {
@@ -4867,33 +4830,15 @@ namespace MixFlowWebApp.Controllers.Auth
                 Message = "Signup successful!"
             });
         }
-
-        [HttpGet("me")]
-        [Authorize]
-        public async Task<ActionResult<OrganizerDto>> GetCurrentOrganizer()
-        {
-            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrEmpty(userId)) return Unauthorized(new { error = "User not authenticated" });
-
-            var organizer = await _organizerService.GetOrganizerByUserIdAsync(userId);
-            if (organizer == null) return NotFound(new { error = "Organizer not found" });
-
-            var organizerDto = _mapper.Map<OrganizerDto>(organizer);
-            return Ok(organizerDto);
-        }
     }
 }
 </file>
 
 <file path="Controllers/LeaderboardController.cs">
 using AutoMapper;
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using MixFlowWebApp.DTOs.LeaderboardDTOs;
 using MixFlowWebApp.Interfaces.Services;
-using Swashbuckle.AspNetCore.Annotations;
-using System.Security.Claims;
 
 namespace MixFlowWebApp.Controllers
 {
@@ -4902,24 +4847,15 @@ namespace MixFlowWebApp.Controllers
     public class LeaderboardController : ControllerBase
     {
         private readonly ILeaderboardService _leaderboardService;
-        private readonly ISessionService _sessionService;
-        private readonly IOrganizerService _organizerService;
         private readonly IMapper _mapper;
 
-        public LeaderboardController(
-            ILeaderboardService leaderboardService,
-            ISessionService sessionService,
-            IOrganizerService organizerService,
-            IMapper mapper)
+        public LeaderboardController(ILeaderboardService leaderboardService, IMapper mapper)
         {
             _leaderboardService = leaderboardService;
-            _sessionService = sessionService;
-            _organizerService = organizerService;
             _mapper = mapper;
         }
 
-        // ✅ Session leaderboard endpoint
-        // :int constraint keeps this from ever swallowing the literal "session/active" route below.
+        // Session leaderboard endpoint
         [HttpGet("session/{sessionId:int}")]
         public async Task<ActionResult<List<LeaderboardPlayerDto>>> GetSessionLeaderboard(int sessionId)
         {
@@ -4928,34 +4864,7 @@ namespace MixFlowWebApp.Controllers
             return Ok(dtoList);
         }
 
-        // ✅ NEW: leaderboard for whichever session is currently active for this organizer.
-        // Lets the Leaderboard page load without the frontend already knowing a sessionId —
-        // it just asks "show me the leaderboard for whatever's happening right now".
-        [HttpGet("session/active")]
-        [Authorize]
-        public async Task<ActionResult> GetActiveSessionLeaderboard()
-        {
-            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrEmpty(userId)) return Unauthorized(new { error = "User not authenticated" });
-
-            var organizer = await _organizerService.GetOrganizerByUserIdAsync(userId);
-            if (organizer == null) return Unauthorized(new { error = "Organizer account not found" });
-
-            var activeSession = await _sessionService.GetActiveSessionByOrganizerAsync(organizer.OrganizerId);
-            if (activeSession == null) return NotFound(new { error = "No active session found." });
-
-            var players = await _leaderboardService.GetSessionLeaderboardAsync(activeSession.SessionId);
-            var dtoList = _mapper.Map<List<LeaderboardPlayerDto>>(players);
-
-            return Ok(new
-            {
-                sessionId = activeSession.SessionId,
-                sessionName = activeSession.SessionName,
-                leaderboard = dtoList
-            });
-        }
-
-        // ✅ Overall leaderboard endpoint
+        // Overall leaderboard endpoint
         [HttpGet("overall")]
         public async Task<ActionResult<List<LeaderboardPlayerDto>>> GetOverallLeaderboard()
         {
@@ -4963,237 +4872,6 @@ namespace MixFlowWebApp.Controllers
             var dtoList = _mapper.Map<List<LeaderboardPlayerDto>>(players);
             return Ok(dtoList);
         }
-
-        // ✅ Snapshot creation endpoint
-        [HttpPost("session/{sessionId}/snapshot")]
-        public async Task<IActionResult> SaveSessionLeaderboardSnapshot(int sessionId)
-        {
-            await _leaderboardService.SaveSessionLeaderboardSnapshotAsync(sessionId);
-            return Ok(new { Message = $"Snapshot saved for session {sessionId}." });
-        }
-
-        // ✅ Retrieve snapshot history for a session
-        [HttpGet("session/{sessionId}/history")]
-        public async Task<ActionResult<List<LeaderboardDto>>> GetSessionLeaderboardHistory(int sessionId)
-        {
-            var snapshots = await _leaderboardService.GetSessionLeaderboardSnapshotsAsync(sessionId);
-
-            var dtoList = snapshots.Select(l => new LeaderboardDto
-            {
-                SessionLeaders = _mapper.Map<List<LeaderboardPlayerDto>>(l.Entries.Select(e => e.Player)),
-                OverallLeaders = new List<LeaderboardPlayerDto>() // not used here
-            }).ToList();
-
-            return Ok(dtoList);
-        }
-    }
-}
-</file>
-
-<file path="Controllers/SessionController.cs">
-using AutoMapper;
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc;
-using MixFlowWebApp.DTOs.SessionDTOs;
-using MixFlowWebApp.DTOs.SessionPlayerDTOs;
-using MixFlowWebApp.Interfaces.Services;
-using MixFlowWebApp.Models;
-using System.Security.Claims;
-
-namespace MixFlowWebApp.Controllers
-{
-    [ApiController]
-    [Route("api/sessions")]
-    [Authorize]
-    public class SessionController : ControllerBase
-    {
-        private readonly ISessionService _sessionService;
-        private readonly IOrganizerService _organizerService;
-        private readonly ISessionPlayerService _sessionPlayerService;
-        private readonly IMapper _mapper;
-        private readonly ILogger<SessionController> _logger;
-
-        public SessionController(
-            ISessionService sessionService,
-            IOrganizerService organizerService,
-            ISessionPlayerService sessionPlayerService,
-            IMapper mapper,
-            ILogger<SessionController> logger)
-        {
-            _sessionService = sessionService;
-            _organizerService = organizerService;
-            _sessionPlayerService = sessionPlayerService;
-            _mapper = mapper;
-            _logger = logger;
-        }
-
-        #region Session Management
-
-        [HttpPost]
-        public async Task<ActionResult<SessionDto>> CreateSession([FromBody] CreateSessionDto dto)
-        {
-            if (!ModelState.IsValid) return BadRequest(new { error = "Invalid input" });
-
-            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrEmpty(userId)) return Unauthorized(new { error = "User not authenticated" });
-
-            var organizer = await _organizerService.GetOrganizerByUserIdAsync(userId);
-            if (organizer == null) return Unauthorized(new { error = "Organizer account not found" });
-
-            var sessionEntity = _mapper.Map<Session>(dto);
-            var session = await _sessionService.CreateSessionAsync(organizer.OrganizerId, sessionEntity);
-
-            _logger.LogInformation("Session {SessionId} created by Organizer {OrganizerId}", session.SessionId, organizer.OrganizerId);
-            return CreatedAtAction(nameof(GetSessionById), new { id = session.SessionId }, _mapper.Map<SessionDto>(session));
-        }
-
-        [HttpGet("{id}")]
-        public async Task<ActionResult<SessionDto>> GetSessionById(int id)
-        {
-            if (id <= 0) return BadRequest(new { error = "Invalid session ID" });
-
-            var session = await _sessionService.GetSessionByIdAsync(id);
-            if (session == null) return NotFound(new { error = $"Session with ID {id} not found" });
-
-            return Ok(_mapper.Map<SessionDto>(session));
-        }
-
-        [HttpGet("mine")]
-        public async Task<ActionResult<List<SessionDto>>> GetMySessions()
-        {
-            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrEmpty(userId)) return Unauthorized(new { error = "User not authenticated" });
-
-            var organizer = await _organizerService.GetOrganizerByUserIdAsync(userId);
-            if (organizer == null) return Unauthorized(new { error = "Organizer account not found" });
-
-            var sessions = await _sessionService.GetOrganizerSessionsAsync(organizer.OrganizerId);
-            return Ok(_mapper.Map<List<SessionDto>>(sessions));
-        }
-
-        /// The organizer's current in-progress session, if any.
-        [HttpGet("active")]
-        public async Task<ActionResult<SessionDto>> GetActiveSession()
-        {
-            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
-            if (string.IsNullOrEmpty(userId)) return Unauthorized(new { error = "User not authenticated" });
-
-            var organizer = await _organizerService.GetOrganizerByUserIdAsync(userId);
-            if (organizer == null) return Unauthorized(new { error = "Organizer account not found" });
-
-            var session = await _sessionService.GetActiveSessionByOrganizerAsync(organizer.OrganizerId);
-            if (session == null) return NotFound(new { error = "No active session found" });
-
-            return Ok(_mapper.Map<SessionDto>(session));
-        }
-
-        [HttpPut("{id}")]
-        public async Task<ActionResult> UpdateSession(int id, [FromBody] UpdateSessionDto dto)
-        {
-            if (id <= 0) return BadRequest(new { error = "Invalid session ID" });
-            if (!ModelState.IsValid) return BadRequest(new { error = "Invalid input" });
-
-            var updatedEntity = _mapper.Map<Session>(dto);
-            var session = await _sessionService.UpdateSessionAsync(id, updatedEntity);
-            if (session == null) return NotFound(new { error = $"Session with ID {id} not found" });
-
-            _logger.LogInformation("Session {SessionId} updated", id);
-            return Ok(_mapper.Map<SessionDto>(session));
-        }
-
-        [HttpPost("{id}/end")]
-        public async Task<ActionResult> EndSession(int id)
-        {
-            if (id <= 0) return BadRequest(new { error = "Invalid session ID" });
-
-            var result = await _sessionService.EndSessionAsync(id);
-            if (!result) return NotFound(new { error = $"Session with ID {id} not found" });
-
-            _logger.LogInformation("Session {SessionId} ended", id);
-            return Ok(new { message = "Session ended successfully" });
-        }
-
-        #endregion
-
-        #region Player Management in Session
-
-        [HttpPost("{sessionId}/players/{playerId}")]
-        public async Task<ActionResult<SessionPlayerDto>> AddPlayerToSession(int sessionId, int playerId)
-        {
-            if (sessionId <= 0 || playerId <= 0) return BadRequest(new { error = "Invalid session ID or player ID" });
-
-            try
-            {
-                var sessionPlayer = await _sessionPlayerService.AddPlayerToSessionAsync(sessionId, playerId);
-                if (sessionPlayer == null) return NotFound(new { error = "Session or player not found" });
-
-                return CreatedAtAction(nameof(GetSessionPlayers), new { sessionId }, _mapper.Map<SessionPlayerDto>(sessionPlayer));
-            }
-            catch (InvalidOperationException ex)
-            {
-                return Conflict(new { error = ex.Message });
-            }
-        }
-
-        /// Returns session players enriched with games-played-in-this-session and
-        /// lock-pair info — this is what the "manage players" table on the session
-        /// page should render from.
-        [HttpGet("{sessionId}/players")]
-        public async Task<ActionResult<List<SessionPlayerDto>>> GetSessionPlayers(int sessionId)
-        {
-            if (sessionId <= 0) return BadRequest(new { error = "Invalid session ID" });
-
-            var players = await _sessionPlayerService.GetSessionPlayersWithStatsAsync(sessionId);
-            return Ok(players);
-        }
-
-        [HttpDelete("{sessionId}/players/{playerId}")]
-        public async Task<ActionResult> RemovePlayerFromSession(int sessionId, int playerId)
-        {
-            if (sessionId <= 0 || playerId <= 0)
-                return BadRequest(new { error = "Invalid session ID or player ID" });
-
-            var result = await _sessionPlayerService.RemovePlayerFromSessionAsync(sessionId, playerId);
-            if (!result)
-            {
-                _logger.LogWarning("Failed to remove Player {PlayerId} from Session {SessionId} - not found", playerId, sessionId);
-                return NotFound(new { error = "Player not found in this session" });
-            }
-
-            _logger.LogInformation("Player {PlayerId} removed from Session {SessionId}", playerId, sessionId);
-            return NoContent();
-        }
-
-        /// Lock two players in this session as a fixed pair. They'll always be placed
-        /// on the same team together whenever the auto-mix/auto-fill logic builds a match.
-        [HttpPost("{sessionId}/players/{playerId}/lock/{partnerId}")]
-        public async Task<ActionResult> LockPair(int sessionId, int playerId, int partnerId)
-        {
-            if (sessionId <= 0 || playerId <= 0 || partnerId <= 0)
-                return BadRequest(new { error = "Invalid session, player, or partner ID" });
-
-            var success = await _sessionPlayerService.LockPairAsync(sessionId, playerId, partnerId);
-            if (!success)
-                return BadRequest(new { error = "Couldn't lock these players — check both are checked in, not benched, and not already locked with someone else." });
-
-            _logger.LogInformation("Players {PlayerId} and {PartnerId} locked as a pair in Session {SessionId}", playerId, partnerId, sessionId);
-            return Ok(new { message = "Players locked as a pair." });
-        }
-
-        /// Unlock a player from their current pair.
-        [HttpPost("{sessionId}/players/{playerId}/unlock")]
-        public async Task<ActionResult> UnlockPair(int sessionId, int playerId)
-        {
-            if (sessionId <= 0 || playerId <= 0) return BadRequest(new { error = "Invalid session or player ID" });
-
-            var success = await _sessionPlayerService.UnlockPairAsync(sessionId, playerId);
-            if (!success) return NotFound(new { error = "Player isn't currently locked with a partner." });
-
-            _logger.LogInformation("Player {PlayerId} unlocked from their pair in Session {SessionId}", playerId, sessionId);
-            return Ok(new { message = "Pair unlocked." });
-        }
-
-        #endregion
     }
 }
 </file>
@@ -5306,7 +4984,6 @@ namespace MixFlowWebApp.DTOs.SessionPlayerDTOs
 
 <file path="Interfaces/Services/ILeaderboardService.cs">
 using MixFlowWebApp.DTOs.LeaderboardDTOs;
-using MixFlowWebApp.Models;
 
 namespace MixFlowWebApp.Interfaces.Services
 {
@@ -5314,8 +4991,6 @@ namespace MixFlowWebApp.Interfaces.Services
     {
         Task<List<LeaderboardPlayerDto>> GetSessionLeaderboardAsync(int sessionId);
         Task<List<LeaderboardPlayerDto>> GetOverallLeaderboardAsync();
-        Task SaveSessionLeaderboardSnapshotAsync(int sessionId);
-        Task<List<Leaderboard>> GetSessionLeaderboardSnapshotsAsync(int sessionId);
 
         /// Clears the cached overall leaderboard so the next read picks up fresh stats.
         /// Must be called any time player win/loss stats change (i.e. after a match result
@@ -5353,8 +5028,6 @@ namespace MixFlowWebApp.Interfaces.Services
         Task<SessionPlayer?> AddPlayerToSessionAsync(int sessionId, int playerId);
         Task<SessionPlayer?> BenchPlayerAsync(int sessionId, int playerId, string reason);
         Task<SessionPlayer?> ReturnFromBenchAsync(int sessionId, int playerId);
-        Task<List<SessionPlayer>> GetSessionPlayersAsync(int sessionId);
-        Task<List<SessionPlayer>> GetBenchPlayersAsync(int sessionId);
         Task<bool> RemovePlayerFromSessionAsync(int sessionId, int playerId);
 
         /// Session players enriched with games-played-in-this-session and lock-pair info.
@@ -5386,22 +5059,6 @@ namespace MixFlowWebApp.Interfaces.Services
         Task<Session?> GetActiveSessionByOrganizerAsync(int organizerId);
         Task<Session?> UpdateSessionAsync(int sessionId, Session updatedSession);
         Task<bool> EndSessionAsync(int sessionId);
-    }
-}
-</file>
-
-<file path="Models/Leaderboard.cs">
-namespace MixFlowWebApp.Models
-{
-    public class Leaderboard
-    {
-        public int LeaderboardId { get; set; }   // Primary key
-        public string Type { get; set; } = "Session"; // "Session" or "Overall"
-        public int? SessionId { get; set; }      // Null if overall leaderboard
-        public DateTime GeneratedAt { get; set; } = DateTime.UtcNow;
-
-        // Navigation property: players included in this leaderboard
-        public List<LeaderboardEntry> Entries { get; set; } = new();
     }
 }
 </file>
@@ -5514,7 +5171,6 @@ using Microsoft.Extensions.Caching.Memory;
 using MixFlowWebApp.Data;
 using MixFlowWebApp.DTOs.LeaderboardDTOs;
 using MixFlowWebApp.Interfaces.Services;
-using MixFlowWebApp.Models;
 
 namespace MixFlowWebApp.Services
 {
@@ -5535,25 +5191,42 @@ namespace MixFlowWebApp.Services
         // ---------------- Session Leaderboard ----------------
         public async Task<List<LeaderboardPlayerDto>> GetSessionLeaderboardAsync(int sessionId)
         {
-            var players = await _context.SessionPlayers
-                .Where(sp => sp.SessionId == sessionId)
-                .Select(sp => new LeaderboardPlayerDto
+            // Scoped to matches actually played in THIS session, not the player's career totals.
+            var sessionStats = await _context.MatchPlayers
+                .Where(mp => mp.Match.SessionId == sessionId && mp.Match.IsCompleted)
+                .GroupBy(mp => mp.PlayerId)
+                .Select(g => new
                 {
-                    PlayerId = sp.PlayerId,
-                    FullName = sp.Player.FullName,
-                    GamesPlayed = sp.Player.GamesPlayed,
-                    Wins = sp.Player.TotalWins,
-                    Losses = sp.Player.TotalLosses,
-                    WinPercentage = sp.Player.WinPercentage,
-                    SkillLevel = sp.Player.SkillLevel
+                    PlayerId = g.Key,
+                    GamesPlayed = g.Count(),
+                    Wins = g.Count(x => x.IsWinner == true),
+                    Losses = g.Count(x => x.IsWinner == false)
+                })
+                .ToListAsync();
+
+            var playerIds = sessionStats.Select(s => s.PlayerId).ToList();
+            var playerInfo = await _context.Players
+                .Where(p => playerIds.Contains(p.PlayerId))
+                .ToDictionaryAsync(p => p.PlayerId, p => p);
+
+            var players = sessionStats
+                .Where(s => playerInfo.ContainsKey(s.PlayerId))
+                .Select(s => new LeaderboardPlayerDto
+                {
+                    PlayerId = s.PlayerId,
+                    FullName = playerInfo[s.PlayerId].FullName,
+                    GamesPlayed = s.GamesPlayed,
+                    Wins = s.Wins,
+                    Losses = s.Losses,
+                    WinPercentage = s.GamesPlayed > 0 ? Math.Round((decimal)s.Wins * 100 / s.GamesPlayed, 2) : 0,
+                    SkillLevel = playerInfo[s.PlayerId].SkillLevel
                 })
                 .OrderByDescending(p => p.Wins)
                 .ThenByDescending(p => p.WinPercentage)
                 .ThenByDescending(p => p.SkillLevel)
                 .Take(SessionLeaderboardLimit)
-                .ToListAsync();
+                .ToList();
 
-            // ✅ Assign rank based on sorted order
             int rank = 1;
             foreach (var player in players)
             {
@@ -5563,7 +5236,6 @@ namespace MixFlowWebApp.Services
             return players;
         }
 
-        // ---------------- Overall Leaderboard ----------------
         // ---------------- Overall Leaderboard (weekly, resets every Sunday) ----------------
         public async Task<List<LeaderboardPlayerDto>> GetOverallLeaderboardAsync()
         {
@@ -5629,42 +5301,6 @@ namespace MixFlowWebApp.Services
         {
             var diff = (int)utcNow.Date.DayOfWeek; // Sunday = 0
             return utcNow.Date.AddDays(-diff);
-        }
-
-        // ---------------- Snapshots ----------------
-        public async Task SaveSessionLeaderboardSnapshotAsync(int sessionId)
-        {
-            var players = await GetSessionLeaderboardAsync(sessionId);
-
-            var leaderboard = new Leaderboard
-            {
-                Type = "Session",
-                SessionId = sessionId,
-                GeneratedAt = DateTime.UtcNow,
-                Entries = players.Select(p => new LeaderboardEntry
-                {
-                    PlayerId = p.PlayerId,
-                    WinPercentage = p.WinPercentage,
-                    GamesPlayed = p.GamesPlayed,
-                    SkillLevel = p.SkillLevel,
-                    Wins = p.Wins,
-                    Losses = p.Losses,
-                    Rank = p.Rank
-                }).ToList()
-            };
-
-            _context.Leaderboards.Add(leaderboard);
-            await _context.SaveChangesAsync();
-        }
-
-        public async Task<List<Leaderboard>> GetSessionLeaderboardSnapshotsAsync(int sessionId)
-        {
-            return await _context.Leaderboards
-                .Include(l => l.Entries)
-                .ThenInclude(e => e.Player)
-                .Where(l => l.Type == "Session" && l.SessionId == sessionId)
-                .OrderByDescending(l => l.GeneratedAt)
-                .ToListAsync();
         }
     }
 }
@@ -5891,12 +5527,30 @@ namespace MixFlowWebApp.Services
             var session = await _context.Sessions.FindAsync(sessionId);
             if (session == null) return null;
 
+            var newNumberOfCourts = updatedSession.NumberOfCourts != 0 ? updatedSession.NumberOfCourts : session.NumberOfCourts;
+
+            // Don't let the court count shrink below whatever court currently has a live
+            // match on it — that match would still exist in the database with no court
+            // card left to show it, orphaned from the Matches page entirely.
+            if (newNumberOfCourts < session.NumberOfCourts)
+            {
+                var highestOccupiedCourt = await _context.Matches
+                    .Where(m => m.SessionId == sessionId && !m.IsCompleted && m.CourtNumber != null)
+                    .MaxAsync(m => (int?)m.CourtNumber);
+
+                if (highestOccupiedCourt.HasValue && newNumberOfCourts < highestOccupiedCourt.Value)
+                {
+                    throw new InvalidOperationException(
+                        $"Can't reduce to {newNumberOfCourts} courts — Court {highestOccupiedCourt.Value} currently has a match in progress. Finish or end that match first.");
+                }
+            }
+
             // Update only non-null or non-default values
             session.SessionName = updatedSession.SessionName ?? session.SessionName;
             session.SessionDate = updatedSession.SessionDate != default ? updatedSession.SessionDate : session.SessionDate;
             session.StartTime = updatedSession.StartTime != default ? updatedSession.StartTime : session.StartTime;
             session.EndTime = updatedSession.EndTime != default ? updatedSession.EndTime : session.EndTime;
-            session.NumberOfCourts = updatedSession.NumberOfCourts != 0 ? updatedSession.NumberOfCourts : session.NumberOfCourts;
+            session.NumberOfCourts = newNumberOfCourts;
             session.UpdatedAt = DateTime.UtcNow;
 
             await _context.SaveChangesAsync();
@@ -5939,12 +5593,226 @@ namespace MixFlowWebApp.Services
 }
 </file>
 
+<file path="Controllers/SessionController.cs">
+using AutoMapper;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using MixFlowWebApp.DTOs.SessionDTOs;
+using MixFlowWebApp.DTOs.SessionPlayerDTOs;
+using MixFlowWebApp.Interfaces.Services;
+using MixFlowWebApp.Models;
+using System.Security.Claims;
+
+namespace MixFlowWebApp.Controllers
+{
+    [ApiController]
+    [Route("api/sessions")]
+    [Authorize]
+    public class SessionController : ControllerBase
+    {
+        private readonly ISessionService _sessionService;
+        private readonly IOrganizerService _organizerService;
+        private readonly ISessionPlayerService _sessionPlayerService;
+        private readonly IMapper _mapper;
+        private readonly ILogger<SessionController> _logger;
+
+        public SessionController(
+            ISessionService sessionService,
+            IOrganizerService organizerService,
+            ISessionPlayerService sessionPlayerService,
+            IMapper mapper,
+            ILogger<SessionController> logger)
+        {
+            _sessionService = sessionService;
+            _organizerService = organizerService;
+            _sessionPlayerService = sessionPlayerService;
+            _mapper = mapper;
+            _logger = logger;
+        }
+
+        #region Session Management
+
+        [HttpPost]
+        public async Task<ActionResult<SessionDto>> CreateSession([FromBody] CreateSessionDto dto)
+        {
+            if (!ModelState.IsValid) return BadRequest(new { error = "Invalid input" });
+
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrEmpty(userId)) return Unauthorized(new { error = "User not authenticated" });
+
+            var organizer = await _organizerService.GetOrganizerByUserIdAsync(userId);
+            if (organizer == null) return Unauthorized(new { error = "Organizer account not found" });
+
+            var sessionEntity = _mapper.Map<Session>(dto);
+            var session = await _sessionService.CreateSessionAsync(organizer.OrganizerId, sessionEntity);
+
+            _logger.LogInformation("Session {SessionId} created by Organizer {OrganizerId}", session.SessionId, organizer.OrganizerId);
+            return CreatedAtAction(nameof(GetSessionById), new { id = session.SessionId }, _mapper.Map<SessionDto>(session));
+        }
+
+        [HttpGet("{id}")]
+        public async Task<ActionResult<SessionDto>> GetSessionById(int id)
+        {
+            if (id <= 0) return BadRequest(new { error = "Invalid session ID" });
+
+            var session = await _sessionService.GetSessionByIdAsync(id);
+            if (session == null) return NotFound(new { error = $"Session with ID {id} not found" });
+
+            return Ok(_mapper.Map<SessionDto>(session));
+        }
+
+        [HttpGet("mine")]
+        public async Task<ActionResult<List<SessionDto>>> GetMySessions()
+        {
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrEmpty(userId)) return Unauthorized(new { error = "User not authenticated" });
+
+            var organizer = await _organizerService.GetOrganizerByUserIdAsync(userId);
+            if (organizer == null) return Unauthorized(new { error = "Organizer account not found" });
+
+            var sessions = await _sessionService.GetOrganizerSessionsAsync(organizer.OrganizerId);
+            return Ok(_mapper.Map<List<SessionDto>>(sessions));
+        }
+
+        /// The organizer's current in-progress session, if any.
+        [HttpGet("active")]
+        public async Task<ActionResult<SessionDto>> GetActiveSession()
+        {
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrEmpty(userId)) return Unauthorized(new { error = "User not authenticated" });
+
+            var organizer = await _organizerService.GetOrganizerByUserIdAsync(userId);
+            if (organizer == null) return Unauthorized(new { error = "Organizer account not found" });
+
+            var session = await _sessionService.GetActiveSessionByOrganizerAsync(organizer.OrganizerId);
+            if (session == null) return NotFound(new { error = "No active session found" });
+
+            return Ok(_mapper.Map<SessionDto>(session));
+        }
+
+        [HttpPut("{id}")]
+        public async Task<ActionResult> UpdateSession(int id, [FromBody] UpdateSessionDto dto)
+        {
+            if (id <= 0) return BadRequest(new { error = "Invalid session ID" });
+            if (!ModelState.IsValid) return BadRequest(new { error = "Invalid input" });
+
+            try
+            {
+                var updatedEntity = _mapper.Map<Session>(dto);
+                var session = await _sessionService.UpdateSessionAsync(id, updatedEntity);
+                if (session == null) return NotFound(new { error = $"Session with ID {id} not found" });
+
+                _logger.LogInformation("Session {SessionId} updated", id);
+                return Ok(_mapper.Map<SessionDto>(session));
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Conflict(new { error = ex.Message });
+            }
+        }
+
+        [HttpPost("{id}/end")]
+        public async Task<ActionResult> EndSession(int id)
+        {
+            if (id <= 0) return BadRequest(new { error = "Invalid session ID" });
+
+            var result = await _sessionService.EndSessionAsync(id);
+            if (!result) return NotFound(new { error = $"Session with ID {id} not found" });
+
+            _logger.LogInformation("Session {SessionId} ended", id);
+            return Ok(new { message = "Session ended successfully" });
+        }
+
+        #endregion
+
+        #region Player Management in Session
+
+        [HttpPost("{sessionId}/players/{playerId}")]
+        public async Task<ActionResult<SessionPlayerDto>> AddPlayerToSession(int sessionId, int playerId)
+        {
+            if (sessionId <= 0 || playerId <= 0) return BadRequest(new { error = "Invalid session ID or player ID" });
+
+            try
+            {
+                var sessionPlayer = await _sessionPlayerService.AddPlayerToSessionAsync(sessionId, playerId);
+                if (sessionPlayer == null) return NotFound(new { error = "Session or player not found" });
+
+                return CreatedAtAction(nameof(GetSessionPlayers), new { sessionId }, _mapper.Map<SessionPlayerDto>(sessionPlayer));
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Conflict(new { error = ex.Message });
+            }
+        }
+
+        /// Returns session players enriched with games-played-in-this-session and
+        /// lock-pair info — this is what the "manage players" table on the session
+        /// page should render from.
+        [HttpGet("{sessionId}/players")]
+        public async Task<ActionResult<List<SessionPlayerDto>>> GetSessionPlayers(int sessionId)
+        {
+            if (sessionId <= 0) return BadRequest(new { error = "Invalid session ID" });
+
+            var players = await _sessionPlayerService.GetSessionPlayersWithStatsAsync(sessionId);
+            return Ok(players);
+        }
+
+        [HttpDelete("{sessionId}/players/{playerId}")]
+        public async Task<ActionResult> RemovePlayerFromSession(int sessionId, int playerId)
+        {
+            if (sessionId <= 0 || playerId <= 0)
+                return BadRequest(new { error = "Invalid session ID or player ID" });
+
+            var result = await _sessionPlayerService.RemovePlayerFromSessionAsync(sessionId, playerId);
+            if (!result)
+            {
+                _logger.LogWarning("Failed to remove Player {PlayerId} from Session {SessionId} - not found", playerId, sessionId);
+                return NotFound(new { error = "Player not found in this session" });
+            }
+
+            _logger.LogInformation("Player {PlayerId} removed from Session {SessionId}", playerId, sessionId);
+            return NoContent();
+        }
+
+        /// Lock two players in this session as a fixed pair. They'll always be placed
+        /// on the same team together whenever the auto-mix/auto-fill logic builds a match.
+        [HttpPost("{sessionId}/players/{playerId}/lock/{partnerId}")]
+        public async Task<ActionResult> LockPair(int sessionId, int playerId, int partnerId)
+        {
+            if (sessionId <= 0 || playerId <= 0 || partnerId <= 0)
+                return BadRequest(new { error = "Invalid session, player, or partner ID" });
+
+            var success = await _sessionPlayerService.LockPairAsync(sessionId, playerId, partnerId);
+            if (!success)
+                return BadRequest(new { error = "Couldn't lock these players — check both are checked in, not benched, and not already locked with someone else." });
+
+            _logger.LogInformation("Players {PlayerId} and {PartnerId} locked as a pair in Session {SessionId}", playerId, partnerId, sessionId);
+            return Ok(new { message = "Players locked as a pair." });
+        }
+
+        /// Unlock a player from their current pair.
+        [HttpPost("{sessionId}/players/{playerId}/unlock")]
+        public async Task<ActionResult> UnlockPair(int sessionId, int playerId)
+        {
+            if (sessionId <= 0 || playerId <= 0) return BadRequest(new { error = "Invalid session or player ID" });
+
+            var success = await _sessionPlayerService.UnlockPairAsync(sessionId, playerId);
+            if (!success) return NotFound(new { error = "Player isn't currently locked with a partner." });
+
+            _logger.LogInformation("Player {PlayerId} unlocked from their pair in Session {SessionId}", playerId, sessionId);
+            return Ok(new { message = "Pair unlocked." });
+        }
+
+        #endregion
+    }
+}
+</file>
+
 <file path="Mappings/MappingProfile.cs">
 using AutoMapper;
-using MixFlowWebApp.DTOs.LeaderboardDTOs;
 using MixFlowWebApp.DTOs.MatchDTOs;
 using MixFlowWebApp.DTOs.OrganizerDTOs;
-using MixFlowWebApp.DTOs.PlayerDTOs;        
+using MixFlowWebApp.DTOs.PlayerDTOs;
 using MixFlowWebApp.DTOs.QueueEntryDTOs;
 using MixFlowWebApp.DTOs.SessionDTOs;
 using MixFlowWebApp.DTOs.SessionPlayerDTOs;
@@ -5997,383 +5865,7 @@ namespace MixFlowWebApp.Mappings
             CreateMap<MatchPlayer, MatchPlayerDto>()
                 .ForMember(dest => dest.FullName, opt => opt.MapFrom(src => src.Player.FullName));
 
-            // Leaderboard Mappings
-            CreateMap<Player, LeaderboardPlayerDto>()
-            .ForMember(dest => dest.FullName, opt => opt.MapFrom(src => src.FullName))
-            .ForMember(dest => dest.Wins, opt => opt.MapFrom(src => src.TotalWins))
-            .ForMember(dest => dest.GamesPlayed, opt => opt.MapFrom(src => src.GamesPlayed));
-
             // Match Result (DTO to Entity is handled manually in service)
-        }
-    }
-}
-</file>
-
-<file path="Services/SessionPlayerService.cs">
-using AutoMapper;
-using Microsoft.EntityFrameworkCore;
-using MixFlowWebApp.Constants;
-using MixFlowWebApp.Data;
-using MixFlowWebApp.DTOs.SessionPlayerDTOs;
-using MixFlowWebApp.Interfaces.Services;
-using MixFlowWebApp.Models;
-
-namespace MixFlowWebApp.Services
-{
-    public static class SessionPlayerStatus
-    {
-        public const string CheckedIn = "CheckedIn";
-        public const string Benched = "Benched";
-    }
-
-    public class SessionPlayerService : ISessionPlayerService
-    {
-        private readonly MixFlowDbContext _context;
-        private readonly IMatchService _matchService;   
-
-        public SessionPlayerService(MixFlowDbContext context, IMatchService matchService)
-        {
-            _context = context;
-            _matchService = matchService;
-        }
-
-        /// Add a player to a session (check-in).
-        public async Task<SessionPlayer?> AddPlayerToSessionAsync(int sessionId, int playerId)
-        {
-            var existing = await _context.SessionPlayers
-                .Include(sp => sp.Player)
-                .FirstOrDefaultAsync(sp => sp.SessionId == sessionId && sp.PlayerId == playerId);
-
-            if (existing != null) return existing;
-
-            // A player can only be checked into one Active session at a time. Without this,
-            // someone could end up queued, benched, or mid-match in two live sessions
-            // simultaneously — which corrupts queue state, stats, and match assignment
-            // for both sessions at once.
-            var alreadyInAnotherActiveSession = await _context.SessionPlayers
-                .Include(sp => sp.Session)
-                .AnyAsync(sp => sp.PlayerId == playerId
-                             && sp.SessionId != sessionId
-                             && sp.Session.Status == SessionStatus.Active);
-
-            if (alreadyInAnotherActiveSession)
-                throw new InvalidOperationException("This player is already checked into another active session.");
-
-            var sessionPlayer = new SessionPlayer
-            {
-                SessionId = sessionId,
-                PlayerId = playerId,
-                Status = SessionPlayerStatus.CheckedIn,
-                CheckInTime = DateTime.UtcNow,
-            };
-
-            _context.SessionPlayers.Add(sessionPlayer);
-            await _context.SaveChangesAsync();
-
-            return await _context.SessionPlayers
-                .Include(sp => sp.Player)
-                .FirstOrDefaultAsync(sp => sp.SessionPlayerId == sessionPlayer.SessionPlayerId);
-        }
-
-        /// Bench a player in a session. Benching also breaks any lock pair they're in —
-        /// a benched player can't stay locked to a partner who's still playing.
-        public async Task<SessionPlayer?> BenchPlayerAsync(int sessionId, int playerId, string reason)
-        {
-            var sp = await _context.SessionPlayers
-                .Include(sp => sp.Player)
-                .FirstOrDefaultAsync(sp => sp.SessionId == sessionId && sp.PlayerId == playerId);
-
-            if (sp == null || sp.Status == SessionPlayerStatus.Benched) return null;
-
-            if (sp.LockedPartnerId.HasValue)
-            {
-                await UnlockPairAsync(sessionId, playerId);
-            }
-
-            sp.Status = SessionPlayerStatus.Benched;
-            sp.BenchReason = reason;
-            sp.BenchedAt = DateTime.UtcNow;
-
-            await _context.SaveChangesAsync();
-            return sp;
-        }
-
-        /// Return a player from bench to checked-in.
-        public async Task<SessionPlayer?> ReturnFromBenchAsync(int sessionId, int playerId)
-        {
-            var sp = await _context.SessionPlayers
-                .Include(sp => sp.Player)
-                .FirstOrDefaultAsync(sp => sp.SessionId == sessionId && sp.PlayerId == playerId);
-
-            if (sp == null || sp.Status == SessionPlayerStatus.CheckedIn) return null;
-
-            sp.Status = SessionPlayerStatus.CheckedIn;
-            sp.BenchReason = null;
-            sp.BenchedAt = null;
-
-            await _context.SaveChangesAsync();
-            return sp;
-        }
-
-        /// Get all players in a session (raw entities).
-        public async Task<List<SessionPlayer>> GetSessionPlayersAsync(int sessionId)
-        {
-            return await _context.SessionPlayers
-                .Where(sp => sp.SessionId == sessionId)
-                .Include(sp => sp.Player)
-                .ToListAsync();
-        }
-
-        /// Get all benched players in a session.
-        public async Task<List<SessionPlayer>> GetBenchPlayersAsync(int sessionId)
-        {
-            return await _context.SessionPlayers
-                .Where(sp => sp.SessionId == sessionId && sp.Status == SessionPlayerStatus.Benched)
-                .Include(sp => sp.Player)
-                .ToListAsync();
-        }
-
-        /// Remove a player from a session. Also breaks their lock pair, if any, so their
-        /// former partner isn't left pointing at a player no longer in this session.
-        public async Task<bool> RemovePlayerFromSessionAsync(int sessionId, int playerId)
-        {
-            var sp = await _context.SessionPlayers
-                .FirstOrDefaultAsync(sp => sp.SessionId == sessionId && sp.PlayerId == playerId);
-
-            if (sp == null) return false;
-
-            if (sp.LockedPartnerId.HasValue)
-            {
-                await UnlockPairAsync(sessionId, playerId);
-            }
-
-            _context.SessionPlayers.Remove(sp);
-            await _context.SaveChangesAsync();
-            return true;
-        }
-
-        /// Session players enriched with games-played-in-this-session and lock-pair info.
-        public async Task<List<SessionPlayerDto>> GetSessionPlayersWithStatsAsync(int sessionId)
-        {
-            var sessionPlayers = await _context.SessionPlayers
-                .Where(sp => sp.SessionId == sessionId)
-                .Include(sp => sp.Player)
-                .ToListAsync();
-
-            var gamesPlayedMap = await _context.MatchPlayers
-                .Where(mp => mp.Match.SessionId == sessionId)
-                .GroupBy(mp => mp.PlayerId)
-                .Select(g => new { PlayerId = g.Key, Count = g.Count() })
-                .ToDictionaryAsync(x => x.PlayerId, x => x.Count);
-
-            var nameByPlayerId = sessionPlayers.ToDictionary(sp => sp.PlayerId, sp => sp.Player.FullName);
-
-            return sessionPlayers.Select(sp => new SessionPlayerDto
-            {
-                SessionPlayerId = sp.SessionPlayerId,
-                PlayerId = sp.PlayerId,
-                FullName = sp.Player.FullName,
-                SkillCategory = sp.Player.SkillCategory,
-                SkillLevel = sp.Player.SkillLevel,
-                Status = sp.Status,
-                BenchReason = sp.BenchReason,
-                CheckInTime = sp.CheckInTime,
-                BenchedAt = sp.BenchedAt,
-                GamesPlayedInSession = gamesPlayedMap.TryGetValue(sp.PlayerId, out var count) ? count : 0,
-                LockedPartnerId = sp.LockedPartnerId,
-                LockedPartnerName = sp.LockedPartnerId.HasValue && nameByPlayerId.TryGetValue(sp.LockedPartnerId.Value, out var partnerName)
-                    ? partnerName
-                    : null,
-            }).ToList();
-        }
-
-        /// Lock two players together as a fixed pair for this session. If both players are
-        /// already sitting in the "next up" queue (or one is queued and the other still
-        /// waiting), they're immediately reorganized so the lock takes effect right away —
-        /// not just the next time the queue happens to be rebuilt from scratch.
-        public async Task<bool> LockPairAsync(int sessionId, int playerId, int partnerId)
-        {
-            if (playerId == partnerId) return false;
-
-            var a = await _context.SessionPlayers
-                .FirstOrDefaultAsync(sp => sp.SessionId == sessionId && sp.PlayerId == playerId);
-            var b = await _context.SessionPlayers
-                .FirstOrDefaultAsync(sp => sp.SessionId == sessionId && sp.PlayerId == partnerId);
-
-            if (a == null || b == null) return false;
-            if (a.Status == SessionPlayerStatus.Benched || b.Status == SessionPlayerStatus.Benched) return false;
-            if (a.LockedPartnerId.HasValue || b.LockedPartnerId.HasValue) return false;
-
-            a.LockedPartnerId = partnerId;
-            b.LockedPartnerId = playerId;
-
-            await _context.SaveChangesAsync();
-
-            await TryPairLockedPartnersImmediatelyAsync(sessionId, playerId, partnerId);
-
-            return true;
-        }
-
-        /// Unlock a player from their current pair. Clears both sides symmetrically.
-        public async Task<bool> UnlockPairAsync(int sessionId, int playerId)
-        {
-            var a = await _context.SessionPlayers
-                .FirstOrDefaultAsync(sp => sp.SessionId == sessionId && sp.PlayerId == playerId);
-
-            if (a == null || !a.LockedPartnerId.HasValue) return false;
-
-            var partnerId = a.LockedPartnerId.Value;
-            var b = await _context.SessionPlayers
-                .FirstOrDefaultAsync(sp => sp.SessionId == sessionId && sp.PlayerId == partnerId);
-
-            a.LockedPartnerId = null;
-            if (b != null) b.LockedPartnerId = null;
-
-            await _context.SaveChangesAsync();
-            return true;
-        }
-
-        // ---------------- Locked-pair reorganization ----------------
-
-        /// If both newly-locked players are already sitting in a "next up" (Ready) match
-        /// and/or the queue — but not yet actually playing — pull whichever one(s) are
-        /// needed so they land on the same team of the same match. Matches that are
-        /// currently Active (on a court, in progress) are never touched; if either player
-        /// is mid-game the lock simply takes effect the next time they're re-queued.
-        private async Task TryPairLockedPartnersImmediatelyAsync(int sessionId, int playerId, int partnerId)
-        {
-            var openMatches = await _context.Matches
-                .Where(m => m.SessionId == sessionId && (m.Status == MatchStatus.Ready || m.Status == MatchStatus.Active))
-                .Include(m => m.MatchPlayers)
-                .ToListAsync();
-
-            Match? FindMatchOf(int pid) => openMatches.FirstOrDefault(m => m.MatchPlayers.Any(mp => mp.PlayerId == pid));
-
-            var matchA = FindMatchOf(playerId);
-            var matchB = FindMatchOf(partnerId);
-
-            // Can't touch a match that's already being played.
-            if (matchA?.Status == MatchStatus.Active || matchB?.Status == MatchStatus.Active) return;
-
-            // Already together.
-            if (matchA != null && matchB != null && matchA.MatchId == matchB.MatchId) return;
-
-            // Neither is placed in a next-up match yet, so there's nothing to reorganize —
-            // the normal next-up builder will pair them together once it next runs.
-            if (matchA == null && matchB == null) return;
-
-            var targetMatch = matchA ?? matchB!;
-            var otherMatch = matchA != null ? matchB : matchA;
-            var incomingPlayerId = matchA != null ? partnerId : playerId;
-            var stayingPlayerId = matchA != null ? playerId : partnerId;
-
-            var incomingInQueue = otherMatch == null && await _context.QueueEntries
-                .AnyAsync(q => q.SessionId == sessionId && q.PlayerId == incomingPlayerId && q.Status == "Waiting");
-
-            if (otherMatch == null && !incomingInQueue) return;
-
-            var stayingSlot = targetMatch.MatchPlayers.FirstOrDefault(mp => mp.PlayerId == stayingPlayerId);
-            if (stayingSlot == null) return;
-
-            var bumpedSlot = targetMatch.MatchPlayers.FirstOrDefault(mp => mp.TeamNumber == stayingSlot.TeamNumber && mp.PlayerId != stayingPlayerId);
-            if (bumpedSlot == null) return;
-
-            var bumpedPlayerId = bumpedSlot.PlayerId;
-
-            if (otherMatch != null)
-            {
-                var incomingSlot = otherMatch.MatchPlayers.FirstOrDefault(mp => mp.PlayerId == incomingPlayerId);
-                if (incomingSlot == null) return;
-
-                otherMatch.MatchPlayers.Remove(incomingSlot);
-                _context.MatchPlayers.Remove(incomingSlot);
-            }
-            else
-            {
-                var incomingQueueEntry = await _context.QueueEntries
-                    .FirstAsync(q => q.SessionId == sessionId && q.PlayerId == incomingPlayerId && q.Status == "Waiting");
-                incomingQueueEntry.Status = "InMatch";
-                incomingQueueEntry.Position = null;
-            }
-
-            // Reuse the bumped player's row for the incoming player, rather than
-            // add/remove, so the pair ends up on the same team as stayingPlayerId.
-            bumpedSlot.PlayerId = incomingPlayerId;
-
-            await ReturnPlayerToWaitingQueueAsync(sessionId, bumpedPlayerId);
-
-            // Pulling the incoming player out of their old ready match leaves it one
-            // player short — backfill it from the queue, or dissolve it if no one's free.
-            if (otherMatch != null)
-            {
-                await BackfillOrDissolveMatchAsync(sessionId, otherMatch);
-            }
-
-            await _context.SaveChangesAsync();
-        }
-
-        private async Task BackfillOrDissolveMatchAsync(int sessionId, Match match)
-        {
-            var lockedPartnerByPlayerId = await _context.SessionPlayers
-                .Where(sp => sp.SessionId == sessionId && sp.LockedPartnerId != null)
-                .ToDictionaryAsync(sp => sp.PlayerId, sp => sp.LockedPartnerId!.Value);
-
-            var waiting = await _context.QueueEntries
-                .Where(q => q.SessionId == sessionId && q.Status == "Waiting")
-                .OrderByDescending(q => q.PriorityScore ?? 0m)
-                .ThenBy(q => q.CheckInTime)
-                .ToListAsync();
-
-            // Prefer a player who isn't locked to anyone, so backfilling this seat doesn't
-            // just split off yet another locked pair.
-            var pick = waiting.FirstOrDefault(q => !lockedPartnerByPlayerId.ContainsKey(q.PlayerId))
-                       ?? waiting.FirstOrDefault();
-
-            if (pick == null)
-            {
-                // No one available to fill the last seat — dissolve the match and send
-                // everyone still in it back to the queue.
-                foreach (var mp in match.MatchPlayers.ToList())
-                {
-                    _context.MatchPlayers.Remove(mp);
-                    await ReturnPlayerToWaitingQueueAsync(sessionId, mp.PlayerId);
-                }
-                _context.Matches.Remove(match);
-                return;
-            }
-
-            var team1Count = match.MatchPlayers.Count(mp => mp.TeamNumber == 1);
-            var team2Count = match.MatchPlayers.Count(mp => mp.TeamNumber == 2);
-            var teamNumber = team1Count <= team2Count ? 1 : 2;
-
-            _context.MatchPlayers.Add(new MatchPlayer { MatchId = match.MatchId, PlayerId = pick.PlayerId, TeamNumber = teamNumber });
-            pick.Status = "InMatch";
-            pick.Position = null;
-        }
-
-        // Mirrors MatchService's queue upsert: reuses the player's existing QueueEntry row
-        // (QueueEntry has a unique SessionId+PlayerId index) instead of risking a duplicate
-        // insert if they already have a non-"Waiting" row for this session.
-        private async Task ReturnPlayerToWaitingQueueAsync(int sessionId, int playerId)
-        {
-            var existing = await _context.QueueEntries
-                .FirstOrDefaultAsync(q => q.SessionId == sessionId && q.PlayerId == playerId);
-
-            if (existing != null)
-            {
-                existing.Status = "Waiting";
-                existing.CheckInTime = DateTime.UtcNow;
-                existing.Position = null;
-                return;
-            }
-
-            _context.QueueEntries.Add(new QueueEntry
-            {
-                SessionId = sessionId,
-                PlayerId = playerId,
-                Status = "Waiting",
-                CheckInTime = DateTime.UtcNow
-            });
         }
     }
 }
@@ -6417,28 +5909,7 @@ namespace MixFlowWebApp.Controllers
             _context = context;
         }
 
-        // 1) Enqueue player
-        [HttpPost("enqueue/{playerId}")]
-        public async Task<ActionResult<QueueEntryDto>> EnqueuePlayer(int sessionId, int playerId)
-        {
-            using var transaction = await _context.Database.BeginTransactionAsync();
-            try
-            {
-                var entry = await _matchService.EnqueuePlayerAsync(sessionId, playerId);
-                await _context.SaveChangesAsync();
-                await transaction.CommitAsync();
-
-                return Ok(_mapper.Map<QueueEntryDto>(entry));
-            }
-            catch (InvalidOperationException ex)
-            {
-                await transaction.RollbackAsync();
-                _logger.LogWarning(ex, "Failed to enqueue player {PlayerId} for session {SessionId}", playerId, sessionId);
-                return BadRequest(new { error = ex.Message });
-            }
-        }
-
-        // 2) View queue
+        // 1) View queue
         [HttpGet("queue")]
         public async Task<ActionResult<List<QueueEntryDto>>> GetQueue(int sessionId)
         {
@@ -6446,7 +5917,7 @@ namespace MixFlowWebApp.Controllers
             return Ok(_mapper.Map<List<QueueEntryDto>>(items));
         }
 
-        // 3) Auto-match: promote next-up matches to free courts and top the next-up
+        // 2) Auto-match: promote next-up matches to free courts and top the next-up
         // queue back up to 2 prepared matches.
         [HttpPost("auto-match")]
         public async Task<IActionResult> AutoMatch(int sessionId)
@@ -6467,7 +5938,7 @@ namespace MixFlowWebApp.Controllers
             }
         }
 
-        // 4) Fill exactly one specific court from the queue — unlike auto-match, this
+        // 3) Fill exactly one specific court from the queue — unlike auto-match, this
         // never touches any other court, even if several are free at once. Promotes an
         // already-prepared next-up match if one exists, otherwise builds a fresh one.
         [HttpPost("court/{courtNumber}/smart-mix")]
@@ -6500,7 +5971,7 @@ namespace MixFlowWebApp.Controllers
             }
         }
 
-        // 5) Record result for a specific match
+        // 4) Record result for a specific match
         [HttpPost("record-result")]
         public async Task<IActionResult> RecordResult(int sessionId, [FromBody] MatchResultDto dto)
         {
@@ -6537,24 +6008,7 @@ namespace MixFlowWebApp.Controllers
             }
         }
 
-        // 6) Remove player from queue
-        [HttpDelete("queue/{playerId}")]
-        public async Task<IActionResult> RemoveFromQueue(int sessionId, int playerId)
-        {
-            using var transaction = await _context.Database.BeginTransactionAsync();
-            var removed = await _matchService.RemoveFromQueueAsync(sessionId, playerId);
-            if (!removed)
-            {
-                await transaction.RollbackAsync();
-                return NotFound(new { error = "Player not found in queue." });
-            }
-
-            await _context.SaveChangesAsync();
-            await transaction.CommitAsync();
-            return Ok(new { message = $"Player {playerId} removed from queue." });
-        }
-
-        // 7) Get completed matches
+        // 5) Get completed matches
         [HttpGet("completed")]
         public async Task<ActionResult<List<MatchDto>>> GetCompletedMatches(int sessionId)
         {
@@ -6562,7 +6016,7 @@ namespace MixFlowWebApp.Controllers
             return Ok(_mapper.Map<List<MatchDto>>(matches));
         }
 
-        // 8) Get active (on-court, in-progress) matches
+        // 6) Get active (on-court, in-progress) matches
         [HttpGet("active")]
         public async Task<ActionResult<List<MatchDto>>> GetActiveMatches(int sessionId)
         {
@@ -6570,7 +6024,7 @@ namespace MixFlowWebApp.Controllers
             return Ok(_mapper.Map<List<MatchDto>>(matches));
         }
 
-        // 8.5) Get "next up" matches — prepared, not yet on a court (target: 2). This is
+        // 7) Get "next up" matches — prepared, not yet on a court (target: 2). This is
         // what the queue page's next-up cards should render from.
         [HttpGet("next-up")]
         public async Task<ActionResult<List<MatchDto>>> GetNextUpMatches(int sessionId)
@@ -6579,7 +6033,7 @@ namespace MixFlowWebApp.Controllers
             return Ok(_mapper.Map<List<MatchDto>>(matches));
         }
 
-        // 8.6) Edit a match's teams: swap two players between Team 1 and Team 2. Works on
+        // 8) Edit a match's teams: swap two players between Team 1 and Team 2. Works on
         // a next-up match or the match currently on a court (not a completed one). Route
         // kept as "next-up/..." for frontend compatibility even though it now also
         // applies to in-progress matches.
@@ -6602,7 +6056,7 @@ namespace MixFlowWebApp.Controllers
             }
         }
 
-        // 8.7) Edit a match: swap one of its players out for a player currently waiting in
+        // 9) Edit a match: swap one of its players out for a player currently waiting in
         // the queue. The bumped player goes back to the queue. Works on a next-up match or
         // the match currently on a court (not a completed one).
         [HttpPut("next-up/{matchId}/swap-with-queue")]
@@ -6624,7 +6078,7 @@ namespace MixFlowWebApp.Controllers
             }
         }
 
-        // 9) Bench a player — also pulls them out of the queue if they were waiting,
+        // 10) Bench a player — also pulls them out of the queue if they were waiting,
         // so a benched player can never still show up as "in line" for a match.
         [HttpPost("bench")]
         public async Task<ActionResult> BenchPlayer(int sessionId, [FromBody] BenchPlayerDto dto)
@@ -6650,20 +6104,7 @@ namespace MixFlowWebApp.Controllers
             return Ok(new { message = "Player benched successfully", reason = dto.Reason });
         }
 
-        // 10) Return a player from bench
-        [HttpPost("bench/{playerId}/return")]
-        public async Task<ActionResult> ReturnFromBench(int sessionId, int playerId)
-        {
-            if (sessionId <= 0 || playerId <= 0) return BadRequest(new { error = "Invalid session ID or player ID" });
-
-            var result = await _sessionPlayerService.ReturnFromBenchAsync(sessionId, playerId);
-            if (result == null) return NotFound(new { error = "Player not found in this session or not benched" });
-
-            _logger.LogInformation("Player {PlayerId} returned from bench in Session {SessionId}", playerId, sessionId);
-            return Ok(new { message = "Player returned from bench successfully" });
-        }
-
-        // 10.5) Return a player from bench straight back into the queue, atomically —
+        // 11) Return a player from bench straight back into the queue, atomically —
         // if either step fails, neither happens, so a player can never end up stuck
         // as "Available" when the intent was "Waiting".
         [HttpPost("bench/{playerId}/return-to-queue")]
@@ -6696,15 +6137,6 @@ namespace MixFlowWebApp.Controllers
             }
         }
 
-        // 11) Get benched players
-        [HttpGet("benched")]
-        public async Task<ActionResult<List<SessionPlayerDto>>> GetBenchedPlayers(int sessionId)
-        {
-            if (sessionId <= 0) return BadRequest(new { error = "Invalid session ID" });
-
-            var benched = await _sessionPlayerService.GetBenchPlayersAsync(sessionId);
-            return Ok(_mapper.Map<List<SessionPlayerDto>>(benched));
-        }
     }
 }
 </file>
@@ -6719,7 +6151,6 @@ namespace MixFlowWebApp.Interfaces.Services
         // ---------------- Queue ----------------
         Task<QueueEntry?> EnqueuePlayerAsync(int sessionId, int playerId);
         Task<List<QueueEntry>> GetCurrentQueueAsync(int sessionId);
-        Task UpdateQueuePrioritiesAsync(int sessionId);
         Task<bool> RemoveFromQueueAsync(int sessionId, int playerId);
 
         // ---------------- Match Creation (randomized only) ----------------
@@ -6752,9 +6183,6 @@ namespace MixFlowWebApp.Interfaces.Services
         // ---------------- Match Results ----------------
         Task<Match> RecordMatchResultAsync(int sessionId, int courtNumber, int team1Score, int team2Score, List<int> team1Players, List<int> team2Players);
         Task HandlePostMatchAsync(int sessionId, List<int> playerIds);
-
-        Task RecordPlayerMatchHistoryAsync(int matchId);
-        Task UpdatePlayerStatsAfterMatchAsync(int matchId);
 
         Task<List<Match>> GetSessionMatchesAsync(int sessionId);
         Task<List<Match>> GetActiveMatchesAsync(int sessionId);
@@ -7487,7 +6915,7 @@ namespace MixFlowWebApp.Services
                 .ToListAsync();
         }
 
-        public async Task UpdateQueuePrioritiesAsync(int sessionId)
+        private async Task UpdateQueuePrioritiesAsync(int sessionId)
         {
             var waiting = await _context.QueueEntries
                 .Where(q => q.SessionId == sessionId && q.Status == "Waiting")
@@ -7975,7 +7403,7 @@ namespace MixFlowWebApp.Services
             await AutoFillCourtsFromQueueAsync(sessionId);
         }
 
-        public async Task RecordPlayerMatchHistoryAsync(int matchId)
+        private async Task RecordPlayerMatchHistoryAsync(int matchId)
         {
             var matchPlayers = await GetMatchPlayersAsync(matchId);
 
@@ -8004,7 +7432,7 @@ namespace MixFlowWebApp.Services
             await _context.SaveChangesAsync();
         }
 
-        public async Task UpdatePlayerStatsAfterMatchAsync(int matchId)
+        private async Task UpdatePlayerStatsAfterMatchAsync(int matchId)
         {
             var matchPlayers = await GetMatchPlayersAsync(matchId);
 
@@ -8065,6 +7493,380 @@ namespace MixFlowWebApp.Services
             return await _context.MatchPlayers
                 .Where(mp => mp.MatchId == matchId)
                 .ToListAsync();
+        }
+    }
+}
+</file>
+
+<file path="Services/SessionPlayerService.cs">
+using AutoMapper;
+using Microsoft.EntityFrameworkCore;
+using MixFlowWebApp.Constants;
+using MixFlowWebApp.Data;
+using MixFlowWebApp.DTOs.SessionPlayerDTOs;
+using MixFlowWebApp.Interfaces.Services;
+using MixFlowWebApp.Models;
+
+namespace MixFlowWebApp.Services
+{
+    public static class SessionPlayerStatus
+    {
+        public const string CheckedIn = "CheckedIn";
+        public const string Benched = "Benched";
+    }
+
+    public class SessionPlayerService : ISessionPlayerService
+    {
+        private readonly MixFlowDbContext _context;
+        private readonly IMatchService _matchService;
+        private readonly ILogger<SessionPlayerService> _logger;
+
+        public SessionPlayerService(MixFlowDbContext context, IMatchService matchService, ILogger<SessionPlayerService> logger)
+        {
+            _context = context;
+            _matchService = matchService;
+            _logger = logger;
+        }
+
+        /// Add a player to a session (check-in).
+        public async Task<SessionPlayer?> AddPlayerToSessionAsync(int sessionId, int playerId)
+        {
+            var existing = await _context.SessionPlayers
+                .Include(sp => sp.Player)
+                .FirstOrDefaultAsync(sp => sp.SessionId == sessionId && sp.PlayerId == playerId);
+
+            if (existing != null) return existing;
+
+            // A player can only be checked into one Active session at a time. Without this,
+            // someone could end up queued, benched, or mid-match in two live sessions
+            // simultaneously — which corrupts queue state, stats, and match assignment
+            // for both sessions at once.
+            var alreadyInAnotherActiveSession = await _context.SessionPlayers
+                .Include(sp => sp.Session)
+                .AnyAsync(sp => sp.PlayerId == playerId
+                             && sp.SessionId != sessionId
+                             && sp.Session.Status == SessionStatus.Active);
+
+            if (alreadyInAnotherActiveSession)
+                throw new InvalidOperationException("This player is already checked into another active session.");
+
+            var sessionPlayer = new SessionPlayer
+            {
+                SessionId = sessionId,
+                PlayerId = playerId,
+                Status = SessionPlayerStatus.CheckedIn,
+                CheckInTime = DateTime.UtcNow,
+            };
+
+            _context.SessionPlayers.Add(sessionPlayer);
+            await _context.SaveChangesAsync();
+
+            // 🐛 FIX: this call went missing at some point — AddPlayerToSessionAsync was
+            // only ever setting Status = "CheckedIn" and stopping there. With no "add to
+            // queue" action left anywhere in the UI (that flow was removed on the
+            // assumption checking a player in AND queuing them were the same action now),
+            // a checked-in player had no path into the queue at all — they'd show up fine
+            // in "Manage Players" but never appear on the Queue page.
+            //
+            // Also logs instead of silently swallowing, unlike before — if this ever fails
+            // again (e.g. session isn't Active yet), it'll show up in the logs instead of
+            // vanishing without a trace.
+            try
+            {
+                await _matchService.EnqueuePlayerAsync(sessionId, playerId);
+                await _context.SaveChangesAsync();
+            }
+            catch (InvalidOperationException ex)
+            {
+                _logger.LogWarning(ex, "Player {PlayerId} added to Session {SessionId} but couldn't be auto-enqueued", playerId, sessionId);
+            }
+
+            return await _context.SessionPlayers
+                .Include(sp => sp.Player)
+                .FirstOrDefaultAsync(sp => sp.SessionPlayerId == sessionPlayer.SessionPlayerId);
+        }
+
+        /// Bench a player in a session. Benching also breaks any lock pair they're in —
+        /// a benched player can't stay locked to a partner who's still playing.
+        public async Task<SessionPlayer?> BenchPlayerAsync(int sessionId, int playerId, string reason)
+        {
+            var sp = await _context.SessionPlayers
+                .Include(sp => sp.Player)
+                .FirstOrDefaultAsync(sp => sp.SessionId == sessionId && sp.PlayerId == playerId);
+
+            if (sp == null || sp.Status == SessionPlayerStatus.Benched) return null;
+
+            if (sp.LockedPartnerId.HasValue)
+            {
+                await UnlockPairAsync(sessionId, playerId);
+            }
+
+            sp.Status = SessionPlayerStatus.Benched;
+            sp.BenchReason = reason;
+            sp.BenchedAt = DateTime.UtcNow;
+
+            await _context.SaveChangesAsync();
+            return sp;
+        }
+
+        /// Return a player from bench to checked-in.
+        public async Task<SessionPlayer?> ReturnFromBenchAsync(int sessionId, int playerId)
+        {
+            var sp = await _context.SessionPlayers
+                .Include(sp => sp.Player)
+                .FirstOrDefaultAsync(sp => sp.SessionId == sessionId && sp.PlayerId == playerId);
+
+            if (sp == null || sp.Status == SessionPlayerStatus.CheckedIn) return null;
+
+            sp.Status = SessionPlayerStatus.CheckedIn;
+            sp.BenchReason = null;
+            sp.BenchedAt = null;
+
+            await _context.SaveChangesAsync();
+            return sp;
+        }
+
+        /// Remove a player from a session. Also breaks their lock pair, if any, so their
+        /// former partner isn't left pointing at a player no longer in this session.
+        public async Task<bool> RemovePlayerFromSessionAsync(int sessionId, int playerId)
+        {
+            var sp = await _context.SessionPlayers
+                .FirstOrDefaultAsync(sp => sp.SessionId == sessionId && sp.PlayerId == playerId);
+
+            if (sp == null) return false;
+
+            if (sp.LockedPartnerId.HasValue)
+            {
+                await UnlockPairAsync(sessionId, playerId);
+            }
+
+            _context.SessionPlayers.Remove(sp);
+            await _context.SaveChangesAsync();
+            return true;
+        }
+
+        /// Session players enriched with games-played-in-this-session and lock-pair info.
+        public async Task<List<SessionPlayerDto>> GetSessionPlayersWithStatsAsync(int sessionId)
+        {
+            var sessionPlayers = await _context.SessionPlayers
+                .Where(sp => sp.SessionId == sessionId)
+                .Include(sp => sp.Player)
+                .ToListAsync();
+
+            var gamesPlayedMap = await _context.MatchPlayers
+                .Where(mp => mp.Match.SessionId == sessionId)
+                .GroupBy(mp => mp.PlayerId)
+                .Select(g => new { PlayerId = g.Key, Count = g.Count() })
+                .ToDictionaryAsync(x => x.PlayerId, x => x.Count);
+
+            var nameByPlayerId = sessionPlayers.ToDictionary(sp => sp.PlayerId, sp => sp.Player.FullName);
+
+            return sessionPlayers.Select(sp => new SessionPlayerDto
+            {
+                SessionPlayerId = sp.SessionPlayerId,
+                PlayerId = sp.PlayerId,
+                FullName = sp.Player.FullName,
+                SkillCategory = sp.Player.SkillCategory,
+                SkillLevel = sp.Player.SkillLevel,
+                Status = sp.Status,
+                BenchReason = sp.BenchReason,
+                CheckInTime = sp.CheckInTime,
+                BenchedAt = sp.BenchedAt,
+                GamesPlayedInSession = gamesPlayedMap.TryGetValue(sp.PlayerId, out var count) ? count : 0,
+                LockedPartnerId = sp.LockedPartnerId,
+                LockedPartnerName = sp.LockedPartnerId.HasValue && nameByPlayerId.TryGetValue(sp.LockedPartnerId.Value, out var partnerName)
+                    ? partnerName
+                    : null,
+            }).ToList();
+        }
+
+        /// Lock two players together as a fixed pair for this session. If both players are
+        /// already sitting in the "next up" queue (or one is queued and the other still
+        /// waiting), they're immediately reorganized so the lock takes effect right away —
+        /// not just the next time the queue happens to be rebuilt from scratch.
+        public async Task<bool> LockPairAsync(int sessionId, int playerId, int partnerId)
+        {
+            if (playerId == partnerId) return false;
+
+            var a = await _context.SessionPlayers
+                .FirstOrDefaultAsync(sp => sp.SessionId == sessionId && sp.PlayerId == playerId);
+            var b = await _context.SessionPlayers
+                .FirstOrDefaultAsync(sp => sp.SessionId == sessionId && sp.PlayerId == partnerId);
+
+            if (a == null || b == null) return false;
+            if (a.Status == SessionPlayerStatus.Benched || b.Status == SessionPlayerStatus.Benched) return false;
+            if (a.LockedPartnerId.HasValue || b.LockedPartnerId.HasValue) return false;
+
+            a.LockedPartnerId = partnerId;
+            b.LockedPartnerId = playerId;
+
+            await _context.SaveChangesAsync();
+
+            await TryPairLockedPartnersImmediatelyAsync(sessionId, playerId, partnerId);
+
+            return true;
+        }
+
+        /// Unlock a player from their current pair. Clears both sides symmetrically.
+        public async Task<bool> UnlockPairAsync(int sessionId, int playerId)
+        {
+            var a = await _context.SessionPlayers
+                .FirstOrDefaultAsync(sp => sp.SessionId == sessionId && sp.PlayerId == playerId);
+
+            if (a == null || !a.LockedPartnerId.HasValue) return false;
+
+            var partnerId = a.LockedPartnerId.Value;
+            var b = await _context.SessionPlayers
+                .FirstOrDefaultAsync(sp => sp.SessionId == sessionId && sp.PlayerId == partnerId);
+
+            a.LockedPartnerId = null;
+            if (b != null) b.LockedPartnerId = null;
+
+            await _context.SaveChangesAsync();
+            return true;
+        }
+
+        // ---------------- Locked-pair reorganization ----------------
+
+        /// If both newly-locked players are already sitting in a "next up" (Ready) match
+        /// and/or the queue — but not yet actually playing — pull whichever one(s) are
+        /// needed so they land on the same team of the same match. Matches that are
+        /// currently Active (on a court, in progress) are never touched; if either player
+        /// is mid-game the lock simply takes effect the next time they're re-queued.
+        private async Task TryPairLockedPartnersImmediatelyAsync(int sessionId, int playerId, int partnerId)
+        {
+            var openMatches = await _context.Matches
+                .Where(m => m.SessionId == sessionId && (m.Status == MatchStatus.Ready || m.Status == MatchStatus.Active))
+                .Include(m => m.MatchPlayers)
+                .ToListAsync();
+
+            Match? FindMatchOf(int pid) => openMatches.FirstOrDefault(m => m.MatchPlayers.Any(mp => mp.PlayerId == pid));
+
+            var matchA = FindMatchOf(playerId);
+            var matchB = FindMatchOf(partnerId);
+
+            // Can't touch a match that's already being played.
+            if (matchA?.Status == MatchStatus.Active || matchB?.Status == MatchStatus.Active) return;
+
+            // Already together.
+            if (matchA != null && matchB != null && matchA.MatchId == matchB.MatchId) return;
+
+            // Neither is placed in a next-up match yet, so there's nothing to reorganize —
+            // the normal next-up builder will pair them together once it next runs.
+            if (matchA == null && matchB == null) return;
+
+            var targetMatch = matchA ?? matchB!;
+            var otherMatch = matchA != null ? matchB : matchA;
+            var incomingPlayerId = matchA != null ? partnerId : playerId;
+            var stayingPlayerId = matchA != null ? playerId : partnerId;
+
+            var incomingInQueue = otherMatch == null && await _context.QueueEntries
+                .AnyAsync(q => q.SessionId == sessionId && q.PlayerId == incomingPlayerId && q.Status == "Waiting");
+
+            if (otherMatch == null && !incomingInQueue) return;
+
+            var stayingSlot = targetMatch.MatchPlayers.FirstOrDefault(mp => mp.PlayerId == stayingPlayerId);
+            if (stayingSlot == null) return;
+
+            var bumpedSlot = targetMatch.MatchPlayers.FirstOrDefault(mp => mp.TeamNumber == stayingSlot.TeamNumber && mp.PlayerId != stayingPlayerId);
+            if (bumpedSlot == null) return;
+
+            var bumpedPlayerId = bumpedSlot.PlayerId;
+
+            if (otherMatch != null)
+            {
+                var incomingSlot = otherMatch.MatchPlayers.FirstOrDefault(mp => mp.PlayerId == incomingPlayerId);
+                if (incomingSlot == null) return;
+
+                otherMatch.MatchPlayers.Remove(incomingSlot);
+                _context.MatchPlayers.Remove(incomingSlot);
+            }
+            else
+            {
+                var incomingQueueEntry = await _context.QueueEntries
+                    .FirstAsync(q => q.SessionId == sessionId && q.PlayerId == incomingPlayerId && q.Status == "Waiting");
+                incomingQueueEntry.Status = "InMatch";
+                incomingQueueEntry.Position = null;
+            }
+
+            // Reuse the bumped player's row for the incoming player, rather than
+            // add/remove, so the pair ends up on the same team as stayingPlayerId.
+            bumpedSlot.PlayerId = incomingPlayerId;
+
+            await ReturnPlayerToWaitingQueueAsync(sessionId, bumpedPlayerId);
+
+            // Pulling the incoming player out of their old ready match leaves it one
+            // player short — backfill it from the queue, or dissolve it if no one's free.
+            if (otherMatch != null)
+            {
+                await BackfillOrDissolveMatchAsync(sessionId, otherMatch);
+            }
+
+            await _context.SaveChangesAsync();
+        }
+
+        private async Task BackfillOrDissolveMatchAsync(int sessionId, Match match)
+        {
+            var lockedPartnerByPlayerId = await _context.SessionPlayers
+                .Where(sp => sp.SessionId == sessionId && sp.LockedPartnerId != null)
+                .ToDictionaryAsync(sp => sp.PlayerId, sp => sp.LockedPartnerId!.Value);
+
+            var waiting = await _context.QueueEntries
+                .Where(q => q.SessionId == sessionId && q.Status == "Waiting")
+                .OrderByDescending(q => q.PriorityScore ?? 0m)
+                .ThenBy(q => q.CheckInTime)
+                .ToListAsync();
+
+            // Prefer a player who isn't locked to anyone, so backfilling this seat doesn't
+            // just split off yet another locked pair.
+            var pick = waiting.FirstOrDefault(q => !lockedPartnerByPlayerId.ContainsKey(q.PlayerId))
+                       ?? waiting.FirstOrDefault();
+
+            if (pick == null)
+            {
+                // No one available to fill the last seat — dissolve the match and send
+                // everyone still in it back to the queue.
+                foreach (var mp in match.MatchPlayers.ToList())
+                {
+                    _context.MatchPlayers.Remove(mp);
+                    await ReturnPlayerToWaitingQueueAsync(sessionId, mp.PlayerId);
+                }
+                _context.Matches.Remove(match);
+                return;
+            }
+
+            var team1Count = match.MatchPlayers.Count(mp => mp.TeamNumber == 1);
+            var team2Count = match.MatchPlayers.Count(mp => mp.TeamNumber == 2);
+            var teamNumber = team1Count <= team2Count ? 1 : 2;
+
+            _context.MatchPlayers.Add(new MatchPlayer { MatchId = match.MatchId, PlayerId = pick.PlayerId, TeamNumber = teamNumber });
+            pick.Status = "InMatch";
+            pick.Position = null;
+        }
+
+        // Mirrors MatchService's queue upsert: reuses the player's existing QueueEntry row
+        // (QueueEntry has a unique SessionId+PlayerId index) instead of risking a duplicate
+        // insert if they already have a non-"Waiting" row for this session.
+        private async Task ReturnPlayerToWaitingQueueAsync(int sessionId, int playerId)
+        {
+            var existing = await _context.QueueEntries
+                .FirstOrDefaultAsync(q => q.SessionId == sessionId && q.PlayerId == playerId);
+
+            if (existing != null)
+            {
+                existing.Status = "Waiting";
+                existing.CheckInTime = DateTime.UtcNow;
+                existing.Position = null;
+                return;
+            }
+
+            _context.QueueEntries.Add(new QueueEntry
+            {
+                SessionId = sessionId,
+                PlayerId = playerId,
+                Status = "Waiting",
+                CheckInTime = DateTime.UtcNow
+            });
         }
     }
 }

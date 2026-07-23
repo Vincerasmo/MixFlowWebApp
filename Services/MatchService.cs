@@ -53,7 +53,7 @@ namespace MixFlowWebApp.Services
                 .ToListAsync();
         }
 
-        public async Task UpdateQueuePrioritiesAsync(int sessionId)
+        private async Task UpdateQueuePrioritiesAsync(int sessionId)
         {
             var waiting = await _context.QueueEntries
                 .Where(q => q.SessionId == sessionId && q.Status == "Waiting")
@@ -541,7 +541,7 @@ namespace MixFlowWebApp.Services
             await AutoFillCourtsFromQueueAsync(sessionId);
         }
 
-        public async Task RecordPlayerMatchHistoryAsync(int matchId)
+        private async Task RecordPlayerMatchHistoryAsync(int matchId)
         {
             var matchPlayers = await GetMatchPlayersAsync(matchId);
 
@@ -570,7 +570,7 @@ namespace MixFlowWebApp.Services
             await _context.SaveChangesAsync();
         }
 
-        public async Task UpdatePlayerStatsAfterMatchAsync(int matchId)
+        private async Task UpdatePlayerStatsAfterMatchAsync(int matchId)
         {
             var matchPlayers = await GetMatchPlayersAsync(matchId);
 

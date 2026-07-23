@@ -7,7 +7,6 @@ namespace MixFlowWebApp.Interfaces.Services
         // ---------------- Queue ----------------
         Task<QueueEntry?> EnqueuePlayerAsync(int sessionId, int playerId);
         Task<List<QueueEntry>> GetCurrentQueueAsync(int sessionId);
-        Task UpdateQueuePrioritiesAsync(int sessionId);
         Task<bool> RemoveFromQueueAsync(int sessionId, int playerId);
 
         // ---------------- Match Creation (randomized only) ----------------
@@ -40,9 +39,6 @@ namespace MixFlowWebApp.Interfaces.Services
         // ---------------- Match Results ----------------
         Task<Match> RecordMatchResultAsync(int sessionId, int courtNumber, int team1Score, int team2Score, List<int> team1Players, List<int> team2Players);
         Task HandlePostMatchAsync(int sessionId, List<int> playerIds);
-
-        Task RecordPlayerMatchHistoryAsync(int matchId);
-        Task UpdatePlayerStatsAfterMatchAsync(int matchId);
 
         Task<List<Match>> GetSessionMatchesAsync(int sessionId);
         Task<List<Match>> GetActiveMatchesAsync(int sessionId);

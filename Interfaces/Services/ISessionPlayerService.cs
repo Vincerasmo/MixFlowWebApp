@@ -8,8 +8,6 @@ namespace MixFlowWebApp.Interfaces.Services
         Task<SessionPlayer?> AddPlayerToSessionAsync(int sessionId, int playerId);
         Task<SessionPlayer?> BenchPlayerAsync(int sessionId, int playerId, string reason);
         Task<SessionPlayer?> ReturnFromBenchAsync(int sessionId, int playerId);
-        Task<List<SessionPlayer>> GetSessionPlayersAsync(int sessionId);
-        Task<List<SessionPlayer>> GetBenchPlayersAsync(int sessionId);
         Task<bool> RemovePlayerFromSessionAsync(int sessionId, int playerId);
 
         /// Session players enriched with games-played-in-this-session and lock-pair info.
@@ -24,4 +22,4 @@ namespace MixFlowWebApp.Interfaces.Services
         /// Unlock a player from their current pair (also clears the partner's side).
         Task<bool> UnlockPairAsync(int sessionId, int playerId);
     }
-}   
+}
