@@ -29,8 +29,6 @@ namespace MixFlowWebApp.Mappings
                 .ForMember(dest => dest.TotalMatchesPlayed, opt => opt.MapFrom(src => src.Matches.Count(m => m.IsCompleted)))
                 .ReverseMap();
             CreateMap<CreateSessionDto, Session>();
-            CreateMap<UpdateSessionDto, Session>()
-                .ForAllMembers(opts => opts.Condition((src, dest, srcMember) => srcMember != null));
 
             // SessionPlayer Mappings
             CreateMap<SessionPlayer, SessionPlayerDto>()

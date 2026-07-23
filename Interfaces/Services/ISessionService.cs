@@ -9,7 +9,6 @@ namespace MixFlowWebApp.Interfaces.Services
         Task<Session?> GetSessionByIdAsync(int sessionId);
         Task<List<Session>> GetOrganizerSessionsAsync(int organizerId);
         Task<Session?> GetActiveSessionByOrganizerAsync(int organizerId);
-        Task<Session?> UpdateSessionAsync(int sessionId, Session updatedSession);
         Task<bool> EndSessionAsync(int sessionId);
     }
 }
