@@ -47,7 +47,9 @@ namespace MixFlowWebApp.Controllers
                 sessionId = session.SessionId,
                 sessionName = session.SessionName,
                 numberOfCourts = session.NumberOfCourts,
-                status = session.Status
+                status = session.Status,
+                startTime = session.StartTime,
+                endTime = session.EndTime
             });
         }
 

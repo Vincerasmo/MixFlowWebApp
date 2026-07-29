@@ -189,7 +189,9 @@ namespace MixFlowWebApp.Services
                 .Where(sp => sp.SessionId == sessionId && sp.LockedPartnerId != null)
                 .ToDictionaryAsync(sp => sp.PlayerId, sp => sp.LockedPartnerId!.Value);
 
-            var selectedPlayers = PickFourForNextCourt(queueEntries, lockedPartnerByPlayerId);
+            var recentCoPlayersByPlayerId = await GetRecentCoPlayersByPlayerIdAsync(queueEntries.Select(q => q.PlayerId));
+
+            var selectedPlayers = PickFourForNextCourt(queueEntries, lockedPartnerByPlayerId, recentCoPlayersByPlayerId);
             if (selectedPlayers.Count < 4) return null;
 
             var match = new Match
@@ -205,7 +207,7 @@ namespace MixFlowWebApp.Services
             _context.Matches.Add(match);
             await _context.SaveChangesAsync();
 
-            AssignTeams(match, selectedPlayers, lockedPartnerByPlayerId);
+            AssignTeams(match, selectedPlayers, lockedPartnerByPlayerId, recentCoPlayersByPlayerId);
 
             foreach (var entry in queueEntries.Where(q => selectedPlayers.Any(p => p.PlayerId == q.PlayerId)))
             {
@@ -334,11 +336,13 @@ namespace MixFlowWebApp.Services
                 .Where(sp => sp.SessionId == sessionId && sp.LockedPartnerId != null)
                 .ToDictionaryAsync(sp => sp.PlayerId, sp => sp.LockedPartnerId!.Value);
 
+            var recentCoPlayersByPlayerId = await GetRecentCoPlayersByPlayerIdAsync(queueEntries.Select(q => q.PlayerId));
+
             var remainingQueue = new List<QueueEntry>(queueEntries);
 
             while (readyCount < TargetReadyMatchCount)
             {
-                var selectedPlayers = PickFourForNextCourt(remainingQueue, lockedPartnerByPlayerId);
+                var selectedPlayers = PickFourForNextCourt(remainingQueue, lockedPartnerByPlayerId, recentCoPlayersByPlayerId);
                 if (selectedPlayers.Count < 4) break;
 
                 var match = new Match
@@ -353,7 +357,7 @@ namespace MixFlowWebApp.Services
                 _context.Matches.Add(match);
                 await _context.SaveChangesAsync();
 
-                AssignTeams(match, selectedPlayers, lockedPartnerByPlayerId);
+                AssignTeams(match, selectedPlayers, lockedPartnerByPlayerId, recentCoPlayersByPlayerId);
 
                 foreach (var entry in remainingQueue.Where(q => selectedPlayers.Any(p => p.PlayerId == q.PlayerId)))
                 {
@@ -407,19 +411,49 @@ namespace MixFlowWebApp.Services
 
         // Shared by EnsureReadyMatchesAsync and CreateMatchForCourtAsync so team
         // assignment (including keeping locked pairs together) only lives in one place.
-        private void AssignTeams(Match match, List<Player> selectedPlayers, Dictionary<int, int> lockedPartnerByPlayerId)
+        private void AssignTeams(
+            Match match,
+            List<Player> selectedPlayers,
+            Dictionary<int, int> lockedPartnerByPlayerId,
+            Dictionary<int, RecentCoPlayers> recentCoPlayersByPlayerId)
         {
             var team1 = new List<Player>();
             var team2 = new List<Player>();
+
+            // Locked pairs always win — seat them together first, unconditionally.
+            var lockedIds = new HashSet<int>();
             foreach (var p in selectedPlayers)
             {
-                var target = team1.Count <= team2.Count ? team1 : team2;
+                if (lockedIds.Contains(p.PlayerId)) continue;
                 if (lockedPartnerByPlayerId.TryGetValue(p.PlayerId, out var partnerId)
                     && selectedPlayers.Any(sp => sp.PlayerId == partnerId))
                 {
-                    target = team1.Count < 2 ? team1 : team2;
+                    var partner = selectedPlayers.First(sp => sp.PlayerId == partnerId);
+                    var target = team1.Count <= team2.Count ? team1 : team2;
+                    target.Add(p);
+                    target.Add(partner);
+                    lockedIds.Add(p.PlayerId);
+                    lockedIds.Add(partnerId);
                 }
-                target.Add(p);
+            }
+
+            var remaining = selectedPlayers.Where(p => !lockedIds.Contains(p.PlayerId)).ToList();
+
+            if (remaining.Count == 4)
+            {
+                var (chosenTeam1, chosenTeam2) = ChooseBestSplit(remaining, recentCoPlayersByPlayerId);
+                team1.AddRange(chosenTeam1);
+                team2.AddRange(chosenTeam2);
+            }
+            else
+            {
+                // A locked pair already took 2 slots (or two separate locked pairs took
+                // all 4) — whoever's left just fills whichever team has fewer people.
+                foreach (var p in remaining)
+                {
+                    var target = team1.Count <= team2.Count ? team1 : team2;
+                    target.Add(p);
+                }
             }
 
             foreach (var p in team1)
@@ -428,7 +462,85 @@ namespace MixFlowWebApp.Services
                 _context.MatchPlayers.Add(new MatchPlayer { MatchId = match.MatchId, PlayerId = p.PlayerId, TeamNumber = 2 });
         }
 
-        private List<Player> PickFourForNextCourt(List<QueueEntry> remainingQueue, Dictionary<int, int> lockedPartnerByPlayerId)
+        // Tries all 3 ways to split 4 unlocked players into two pairs, scores each split
+        // by how many of its pairs were teammates in either player's most recent match,
+        // and keeps only the least-repetitive option(s). When more than one split ties
+        // for best — including the common case of zero conflicts — picks randomly among
+        // them, so team composition isn't always "first two in vs last two in" for a
+        // fully fresh group.
+        private (List<Player> Team1, List<Player> Team2) ChooseBestSplit(
+            List<Player> four,
+            Dictionary<int, RecentCoPlayers> recentCoPlayersByPlayerId)
+        {
+            bool WereRecentPartners(Player a, Player b) =>
+                (recentCoPlayersByPlayerId.TryGetValue(a.PlayerId, out var aInfo) && aInfo.PartnerId == b.PlayerId)
+                || (recentCoPlayersByPlayerId.TryGetValue(b.PlayerId, out var bInfo) && bInfo.PartnerId == a.PlayerId);
+
+            var splits = new List<(Player[] Pair1, Player[] Pair2)>
+            {
+                (new[] { four[0], four[1] }, new[] { four[2], four[3] }),
+                (new[] { four[0], four[2] }, new[] { four[1], four[3] }),
+                (new[] { four[0], four[3] }, new[] { four[1], four[2] }),
+            };
+
+            int ConflictCount((Player[] Pair1, Player[] Pair2) split)
+            {
+                var count = 0;
+                if (WereRecentPartners(split.Pair1[0], split.Pair1[1])) count++;
+                if (WereRecentPartners(split.Pair2[0], split.Pair2[1])) count++;
+                return count;
+            }
+
+            var bestScore = splits.Min(ConflictCount);
+            var bestSplits = splits.Where(s => ConflictCount(s) == bestScore).ToList();
+            var chosen = bestSplits[Random.Shared.Next(bestSplits.Count)];
+
+            return (chosen.Pair1.ToList(), chosen.Pair2.ToList());
+        }
+
+        // Preserves the teammate/opponent distinction that used to get collapsed away —
+        // AssignTeams needs to know specifically who was a recent PARTNER (not just "any
+        // co-player") to decide who to split apart.
+        private class RecentCoPlayers
+        {
+            public HashSet<int> All { get; set; } = new(); // partner + both opponents — used by PickFourForNextCourt
+            public int? PartnerId { get; set; } // used by AssignTeams
+        }
+
+        // Each player's teammate + opponents from their most recently completed match —
+        // used by PickFourForNextCourt so a player's next match isn't a rerun of the
+        // exact group of 4 they just finished with. Only looks at the single most recent
+        // match per player, not deeper history.
+        private async Task<Dictionary<int, RecentCoPlayers>> GetRecentCoPlayersByPlayerIdAsync(IEnumerable<int> playerIds)
+        {
+            var ids = playerIds.ToList();
+            if (ids.Count == 0) return new Dictionary<int, RecentCoPlayers>();
+
+            var history = await _context.PlayerMatchHistories
+                .Where(h => ids.Contains(h.PlayerId))
+                .OrderByDescending(h => h.PlayedAt)
+                .ToListAsync();
+
+            var result = new Dictionary<int, RecentCoPlayers>();
+            foreach (var h in history)
+            {
+                if (result.ContainsKey(h.PlayerId)) continue; // list is ordered desc — first hit per player is their most recent
+
+                var coPlayers = new HashSet<int>();
+                if (h.PartnerId.HasValue) coPlayers.Add(h.PartnerId.Value);
+                if (h.Opponent1Id.HasValue) coPlayers.Add(h.Opponent1Id.Value);
+                if (h.Opponent2Id.HasValue) coPlayers.Add(h.Opponent2Id.Value);
+
+                result[h.PlayerId] = new RecentCoPlayers { All = coPlayers, PartnerId = h.PartnerId };
+            }
+
+            return result;
+        }
+
+        private List<Player> PickFourForNextCourt(
+            List<QueueEntry> remainingQueue,
+            Dictionary<int, int> lockedPartnerByPlayerId,
+            Dictionary<int, RecentCoPlayers> recentCoPlayersByPlayerId)
         {
             var selected = new List<Player>();
             var selectedIds = new HashSet<int>();
@@ -457,14 +569,37 @@ namespace MixFlowWebApp.Services
                 }
             }
 
-            // Pass 2: fill any remaining slots with whoever's next in normal queue order.
+            // Pass 2: fill remaining slots, skipping anyone who was a teammate or opponent
+            // of someone already selected in THAT PERSON'S immediately-previous match —
+            // so a player's next match is a genuinely different set of people, not a
+            // rerun of the exact group they just walked off the court with.
+            bool WouldRepeatRecentMatchup(int candidateId) =>
+                recentCoPlayersByPlayerId.TryGetValue(candidateId, out var recent)
+                && selectedIds.Any(recent.All.Contains);
+
             foreach (var entry in remainingQueue)
             {
                 if (selected.Count >= 4) break;
                 if (selectedIds.Contains(entry.PlayerId)) continue;
+                if (WouldRepeatRecentMatchup(entry.PlayerId)) continue;
 
                 selected.Add(entry.Player);
                 selectedIds.Add(entry.PlayerId);
+            }
+
+            // Pass 3: still short — small player pool, or everyone left would repeat a
+            // recent matchup. Fill the rest in normal queue order regardless; a court
+            // sitting empty is worse than one replaying a recent pairing.
+            if (selected.Count < 4)
+            {
+                foreach (var entry in remainingQueue)
+                {
+                    if (selected.Count >= 4) break;
+                    if (selectedIds.Contains(entry.PlayerId)) continue;
+
+                    selected.Add(entry.Player);
+                    selectedIds.Add(entry.PlayerId);
+                }
             }
 
             return selected;
