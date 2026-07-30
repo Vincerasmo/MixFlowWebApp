@@ -189,9 +189,9 @@ namespace MixFlowWebApp.Services
                 .Where(sp => sp.SessionId == sessionId && sp.LockedPartnerId != null)
                 .ToDictionaryAsync(sp => sp.PlayerId, sp => sp.LockedPartnerId!.Value);
 
-            var recentCoPlayersByPlayerId = await GetRecentCoPlayersByPlayerIdAsync(queueEntries.Select(q => q.PlayerId));
+            var historyByPlayerId = await GetSessionHistoryByPlayerIdAsync(sessionId, queueEntries.Select(q => q.PlayerId));
 
-            var selectedPlayers = PickFourForNextCourt(queueEntries, lockedPartnerByPlayerId, recentCoPlayersByPlayerId);
+            var selectedPlayers = PickFourForNextCourt(queueEntries, lockedPartnerByPlayerId, historyByPlayerId);
             if (selectedPlayers.Count < 4) return null;
 
             var match = new Match
@@ -207,7 +207,7 @@ namespace MixFlowWebApp.Services
             _context.Matches.Add(match);
             await _context.SaveChangesAsync();
 
-            AssignTeams(match, selectedPlayers, lockedPartnerByPlayerId, recentCoPlayersByPlayerId);
+            AssignTeams(match, selectedPlayers, lockedPartnerByPlayerId, historyByPlayerId);
 
             foreach (var entry in queueEntries.Where(q => selectedPlayers.Any(p => p.PlayerId == q.PlayerId)))
             {
@@ -336,13 +336,13 @@ namespace MixFlowWebApp.Services
                 .Where(sp => sp.SessionId == sessionId && sp.LockedPartnerId != null)
                 .ToDictionaryAsync(sp => sp.PlayerId, sp => sp.LockedPartnerId!.Value);
 
-            var recentCoPlayersByPlayerId = await GetRecentCoPlayersByPlayerIdAsync(queueEntries.Select(q => q.PlayerId));
+            var historyByPlayerId = await GetSessionHistoryByPlayerIdAsync(sessionId, queueEntries.Select(q => q.PlayerId));
 
             var remainingQueue = new List<QueueEntry>(queueEntries);
 
             while (readyCount < TargetReadyMatchCount)
             {
-                var selectedPlayers = PickFourForNextCourt(remainingQueue, lockedPartnerByPlayerId, recentCoPlayersByPlayerId);
+                var selectedPlayers = PickFourForNextCourt(remainingQueue, lockedPartnerByPlayerId, historyByPlayerId);
                 if (selectedPlayers.Count < 4) break;
 
                 var match = new Match
@@ -357,7 +357,7 @@ namespace MixFlowWebApp.Services
                 _context.Matches.Add(match);
                 await _context.SaveChangesAsync();
 
-                AssignTeams(match, selectedPlayers, lockedPartnerByPlayerId, recentCoPlayersByPlayerId);
+                AssignTeams(match, selectedPlayers, lockedPartnerByPlayerId, historyByPlayerId);
 
                 foreach (var entry in remainingQueue.Where(q => selectedPlayers.Any(p => p.PlayerId == q.PlayerId)))
                 {
@@ -415,7 +415,7 @@ namespace MixFlowWebApp.Services
             Match match,
             List<Player> selectedPlayers,
             Dictionary<int, int> lockedPartnerByPlayerId,
-            Dictionary<int, RecentCoPlayers> recentCoPlayersByPlayerId)
+            Dictionary<int, PlayerSessionHistory> historyByPlayerId)
         {
             var team1 = new List<Player>();
             var team2 = new List<Player>();
@@ -441,7 +441,7 @@ namespace MixFlowWebApp.Services
 
             if (remaining.Count == 4)
             {
-                var (chosenTeam1, chosenTeam2) = ChooseBestSplit(remaining, recentCoPlayersByPlayerId);
+                var (chosenTeam1, chosenTeam2) = ChooseBestSplit(remaining, historyByPlayerId);
                 team1.AddRange(chosenTeam1);
                 team2.AddRange(chosenTeam2);
             }
@@ -462,19 +462,25 @@ namespace MixFlowWebApp.Services
                 _context.MatchPlayers.Add(new MatchPlayer { MatchId = match.MatchId, PlayerId = p.PlayerId, TeamNumber = 2 });
         }
 
-        // Tries all 3 ways to split 4 unlocked players into two pairs, scores each split
-        // by how many of its pairs were teammates in either player's most recent match,
-        // and keeps only the least-repetitive option(s). When more than one split ties
-        // for best — including the common case of zero conflicts — picks randomly among
-        // them, so team composition isn't always "first two in vs last two in" for a
-        // fully fresh group.
+        // Tries all 3 ways to split 4 players into two pairs and keeps the least-bad
+        // option. Teammate repeats are minimized FIRST, opponent repeats second — i.e.
+        // when some repeat is unavoidable, this prefers a split where two people who've
+        // been opponents before end up as opponents again over one where two people
+        // who've been TEAMMATES before get stuck as teammates again. That's a deliberate
+        // priority call: teammate variety is treated as mattering more than opponent
+        // variety. Flip the tuple order in `Score` below if you want it the other way.
+        // When multiple splits tie for best, picks randomly among them.
         private (List<Player> Team1, List<Player> Team2) ChooseBestSplit(
             List<Player> four,
-            Dictionary<int, RecentCoPlayers> recentCoPlayersByPlayerId)
+            Dictionary<int, PlayerSessionHistory> historyByPlayerId)
         {
-            bool WereRecentPartners(Player a, Player b) =>
-                (recentCoPlayersByPlayerId.TryGetValue(a.PlayerId, out var aInfo) && aInfo.PartnerId == b.PlayerId)
-                || (recentCoPlayersByPlayerId.TryGetValue(b.PlayerId, out var bInfo) && bInfo.PartnerId == a.PlayerId);
+            bool WereTeammates(Player a, Player b) =>
+                (historyByPlayerId.TryGetValue(a.PlayerId, out var aInfo) && aInfo.Teammates.Contains(b.PlayerId))
+                || (historyByPlayerId.TryGetValue(b.PlayerId, out var bInfo) && bInfo.Teammates.Contains(a.PlayerId));
+
+            bool WereOpponents(Player a, Player b) =>
+                (historyByPlayerId.TryGetValue(a.PlayerId, out var aInfo) && aInfo.Opponents.Contains(b.PlayerId))
+                || (historyByPlayerId.TryGetValue(b.PlayerId, out var bInfo) && bInfo.Opponents.Contains(a.PlayerId));
 
             var splits = new List<(Player[] Pair1, Player[] Pair2)>
             {
@@ -483,55 +489,58 @@ namespace MixFlowWebApp.Services
                 (new[] { four[0], four[3] }, new[] { four[1], four[2] }),
             };
 
-            int ConflictCount((Player[] Pair1, Player[] Pair2) split)
+            (int TeammateConflicts, int OpponentConflicts) Score((Player[] Pair1, Player[] Pair2) split)
             {
-                var count = 0;
-                if (WereRecentPartners(split.Pair1[0], split.Pair1[1])) count++;
-                if (WereRecentPartners(split.Pair2[0], split.Pair2[1])) count++;
-                return count;
+                var teammateConflicts = 0;
+                if (WereTeammates(split.Pair1[0], split.Pair1[1])) teammateConflicts++;
+                if (WereTeammates(split.Pair2[0], split.Pair2[1])) teammateConflicts++;
+
+                // Cross-team pairs are the actual on-court opponent matchups for this split.
+                var opponentConflicts = 0;
+                foreach (var a in split.Pair1)
+                    foreach (var b in split.Pair2)
+                        if (WereOpponents(a, b)) opponentConflicts++;
+
+                return (teammateConflicts, opponentConflicts);
             }
 
-            var bestScore = splits.Min(ConflictCount);
-            var bestSplits = splits.Where(s => ConflictCount(s) == bestScore).ToList();
+            var scored = splits.Select(s => (Split: s, Score: Score(s))).ToList();
+            var best = scored.Min(x => x.Score);
+            var bestSplits = scored.Where(x => x.Score.Equals(best)).Select(x => x.Split).ToList();
             var chosen = bestSplits[Random.Shared.Next(bestSplits.Count)];
 
             return (chosen.Pair1.ToList(), chosen.Pair2.ToList());
         }
 
-        // Preserves the teammate/opponent distinction that used to get collapsed away —
-        // AssignTeams needs to know specifically who was a recent PARTNER (not just "any
-        // co-player") to decide who to split apart.
-        private class RecentCoPlayers
+        // Tracks everyone a player has EVER been a teammate of, and everyone they've EVER
+        // faced as an opponent, across the whole current session — not just their last
+        // match. This is what lets the pairing logic actually work toward "hasn't met
+        // this person yet this session" instead of just "wasn't with them last game."
+        private class PlayerSessionHistory
         {
-            public HashSet<int> All { get; set; } = new(); // partner + both opponents — used by PickFourForNextCourt
-            public int? PartnerId { get; set; } // used by AssignTeams
+            public HashSet<int> Teammates { get; set; } = new();
+            public HashSet<int> Opponents { get; set; } = new();
         }
 
-        // Each player's teammate + opponents from their most recently completed match —
-        // used by PickFourForNextCourt so a player's next match isn't a rerun of the
-        // exact group of 4 they just finished with. Only looks at the single most recent
-        // match per player, not deeper history.
-        private async Task<Dictionary<int, RecentCoPlayers>> GetRecentCoPlayersByPlayerIdAsync(IEnumerable<int> playerIds)
+        // Builds each queued player's full session history (not just their most recent
+        // match) so selection and team assignment can both work toward genuinely fresh
+        // matchups instead of just avoiding an exact repeat of the last game.
+        private async Task<Dictionary<int, PlayerSessionHistory>> GetSessionHistoryByPlayerIdAsync(int sessionId, IEnumerable<int> playerIds)
         {
             var ids = playerIds.ToList();
-            if (ids.Count == 0) return new Dictionary<int, RecentCoPlayers>();
+            var result = ids.ToDictionary(id => id, _ => new PlayerSessionHistory());
+            if (ids.Count == 0) return result;
 
             var history = await _context.PlayerMatchHistories
-                .Where(h => ids.Contains(h.PlayerId))
-                .OrderByDescending(h => h.PlayedAt)
+                .Where(h => ids.Contains(h.PlayerId) && _context.Matches.Any(m => m.MatchId == h.MatchId && m.SessionId == sessionId))
                 .ToListAsync();
 
-            var result = new Dictionary<int, RecentCoPlayers>();
             foreach (var h in history)
             {
-                if (result.ContainsKey(h.PlayerId)) continue; // list is ordered desc — first hit per player is their most recent
-
-                var coPlayers = new HashSet<int>();
-                if (h.PartnerId.HasValue) coPlayers.Add(h.PartnerId.Value);
-                if (h.Opponent1Id.HasValue) coPlayers.Add(h.Opponent1Id.Value);
-                if (h.Opponent2Id.HasValue) coPlayers.Add(h.Opponent2Id.Value);
-
-                result[h.PlayerId] = new RecentCoPlayers { All = coPlayers, PartnerId = h.PartnerId };
+                var info = result[h.PlayerId];
+                if (h.PartnerId.HasValue) info.Teammates.Add(h.PartnerId.Value);
+                if (h.Opponent1Id.HasValue) info.Opponents.Add(h.Opponent1Id.Value);
+                if (h.Opponent2Id.HasValue) info.Opponents.Add(h.Opponent2Id.Value);
             }
 
             return result;
@@ -540,7 +549,7 @@ namespace MixFlowWebApp.Services
         private List<Player> PickFourForNextCourt(
             List<QueueEntry> remainingQueue,
             Dictionary<int, int> lockedPartnerByPlayerId,
-            Dictionary<int, RecentCoPlayers> recentCoPlayersByPlayerId)
+            Dictionary<int, PlayerSessionHistory> historyByPlayerId)
         {
             var selected = new List<Player>();
             var selectedIds = new HashSet<int>();
@@ -569,27 +578,58 @@ namespace MixFlowWebApp.Services
                 }
             }
 
-            // Pass 2: fill remaining slots, skipping anyone who was a teammate or opponent
-            // of someone already selected in THAT PERSON'S immediately-previous match —
-            // so a player's next match is a genuinely different set of people, not a
-            // rerun of the exact group they just walked off the court with.
-            bool WouldRepeatRecentMatchup(int candidateId) =>
-                recentCoPlayersByPlayerId.TryGetValue(candidateId, out var recent)
-                && selectedIds.Any(recent.All.Contains);
-
-            foreach (var entry in remainingQueue)
+            bool HasHistoryWith(int candidateId, int selectedId, bool includeOpponents)
             {
-                if (selected.Count >= 4) break;
-                if (selectedIds.Contains(entry.PlayerId)) continue;
-                if (WouldRepeatRecentMatchup(entry.PlayerId)) continue;
-
-                selected.Add(entry.Player);
-                selectedIds.Add(entry.PlayerId);
+                if (historyByPlayerId.TryGetValue(candidateId, out var candidateInfo))
+                {
+                    if (candidateInfo.Teammates.Contains(selectedId)) return true;
+                    if (includeOpponents && candidateInfo.Opponents.Contains(selectedId)) return true;
+                }
+                // History is written symmetrically for every player in a match, so checking
+                // the candidate's own record should already cover both directions — but
+                // check the other direction too in case older data predates that guarantee.
+                if (historyByPlayerId.TryGetValue(selectedId, out var selectedInfo))
+                {
+                    if (selectedInfo.Teammates.Contains(candidateId)) return true;
+                    if (includeOpponents && selectedInfo.Opponents.Contains(candidateId)) return true;
+                }
+                return false;
             }
 
-            // Pass 3: still short — small player pool, or everyone left would repeat a
-            // recent matchup. Fill the rest in normal queue order regardless; a court
-            // sitting empty is worse than one replaying a recent pairing.
+            void FillRemainingSlots(bool includeOpponents)
+            {
+                foreach (var entry in remainingQueue)
+                {
+                    if (selected.Count >= 4) break;
+                    if (selectedIds.Contains(entry.PlayerId)) continue;
+                    if (selectedIds.Any(id => HasHistoryWith(entry.PlayerId, id, includeOpponents))) continue;
+
+                    selected.Add(entry.Player);
+                    selectedIds.Add(entry.PlayerId);
+                }
+            }
+
+            // Pass 2 ("fresh foursome"): fill remaining slots only with players who have
+            // NEVER been a teammate OR an opponent of anyone already selected, this
+            // session. If this reaches 4, every possible 2v2 split of the group is
+            // guaranteed conflict-free.
+            FillRemainingSlots(includeOpponents: true);
+
+            // Pass 3 ("teammate-fresh"): couldn't complete a fully fresh group — relax to
+            // allowing a repeat OPPONENT matchup, but still refuse anyone who's ever been
+            // a TEAMMATE of someone already selected. This still guarantees ChooseBestSplit
+            // can find a split with zero teammate repeats; it just may not avoid every
+            // repeat opponent matchup.
+            if (selected.Count < 4)
+            {
+                FillRemainingSlots(includeOpponents: false);
+            }
+
+            // Pass 4 (fallback): still short — small player pool, locked pairs eating up
+            // slots, or everyone left has history with the group either way. Fill the rest
+            // in normal queue order regardless of history; a court sitting empty is worse
+            // than one replaying a recent pairing. ChooseBestSplit still does its best with
+            // whoever ends up here.
             if (selected.Count < 4)
             {
                 foreach (var entry in remainingQueue)
