@@ -146,15 +146,22 @@ namespace MixFlowWebApp.Controllers
             if (sessionId <= 0 || playerId <= 0)
                 return BadRequest(new { error = "Invalid session ID or player ID" });
 
-            var result = await _sessionPlayerService.RemovePlayerFromSessionAsync(sessionId, playerId);
-            if (!result)
+            try
             {
-                _logger.LogWarning("Failed to remove Player {PlayerId} from Session {SessionId} - not found", playerId, sessionId);
-                return NotFound(new { error = "Player not found in this session" });
-            }
+                var result = await _sessionPlayerService.RemovePlayerFromSessionAsync(sessionId, playerId);
+                if (!result)
+                {
+                    _logger.LogWarning("Failed to remove Player {PlayerId} from Session {SessionId} - not found", playerId, sessionId);
+                    return NotFound(new { error = "Player not found in this session" });
+                }
 
-            _logger.LogInformation("Player {PlayerId} removed from Session {SessionId}", playerId, sessionId);
-            return NoContent();
+                _logger.LogInformation("Player {PlayerId} removed from Session {SessionId}", playerId, sessionId);
+                return NoContent();
+            }
+            catch (InvalidOperationException ex)
+            {
+                return Conflict(new { error = ex.Message });
+            }
         }
 
         /// Lock two players in this session as a fixed pair. They'll always be placed

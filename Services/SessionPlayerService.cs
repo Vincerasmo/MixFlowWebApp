@@ -134,10 +134,32 @@ namespace MixFlowWebApp.Services
 
             if (sp == null) return false;
 
+            // Don't allow removing someone currently on a court or about to start one —
+            // that would silently pull them out of a match nobody chose to end.
+            var inActiveOrReadyMatch = await _context.MatchPlayers
+                .AnyAsync(mp => mp.PlayerId == playerId
+                             && mp.Match.SessionId == sessionId
+                             && mp.Match.Status != MatchStatus.Completed);
+            if (inActiveOrReadyMatch)
+                throw new InvalidOperationException("This player is currently in a match (or about to start one) and can't be removed. Finish or record that match first.");
+
+            // Don't allow removing someone who's already played — their completed match
+            // history for this session should stay attributable to a real roster entry.
+            var hasCompletedMatch = await _context.MatchPlayers
+                .AnyAsync(mp => mp.PlayerId == playerId
+                             && mp.Match.SessionId == sessionId
+                             && mp.Match.Status == MatchStatus.Completed);
+            if (hasCompletedMatch)
+                throw new InvalidOperationException("This player has already played a match in this session and can't be removed from the roster.");
+
             if (sp.LockedPartnerId.HasValue)
             {
                 await UnlockPairAsync(sessionId, playerId);
             }
+
+            // Same cleanup BenchPlayerAsync already relies on — pulls them out of the queue
+            // if they were "Waiting", so their name doesn't keep appearing there after removal.
+            await _matchService.RemoveFromQueueAsync(sessionId, playerId);
 
             _context.SessionPlayers.Remove(sp);
             await _context.SaveChangesAsync();

@@ -23,35 +23,40 @@ namespace MixFlowWebApp.Services
         // ---------------- Session Leaderboard ----------------
         public async Task<List<LeaderboardPlayerDto>> GetSessionLeaderboardAsync(int sessionId)
         {
-            // Scoped to matches actually played in THIS session, not the player's career totals.
-            var sessionStats = await _context.MatchPlayers
+            // Scoped to matches actually played in THIS session, not the player's career
+            // totals. Pulled as flat per-match rows (not a SQL-side aggregate) because
+            // streak needs each player's results in chronological order, which a GroupBy
+            // aggregate can't express.
+            var matchResults = await _context.MatchPlayers
                 .Where(mp => mp.Match.SessionId == sessionId && mp.Match.IsCompleted)
-                .GroupBy(mp => mp.PlayerId)
-                .Select(g => new
-                {
-                    PlayerId = g.Key,
-                    GamesPlayed = g.Count(),
-                    Wins = g.Count(x => x.IsWinner == true),
-                    Losses = g.Count(x => x.IsWinner == false)
-                })
+                .Select(mp => new { mp.PlayerId, mp.IsWinner, mp.Match.EndTime })
                 .ToListAsync();
 
-            var playerIds = sessionStats.Select(s => s.PlayerId).ToList();
+            var playerIds = matchResults.Select(r => r.PlayerId).Distinct().ToList();
             var playerInfo = await _context.Players
                 .Where(p => playerIds.Contains(p.PlayerId))
                 .ToDictionaryAsync(p => p.PlayerId, p => p);
 
-            var players = sessionStats
-                .Where(s => playerInfo.ContainsKey(s.PlayerId))
-                .Select(s => new LeaderboardPlayerDto
+            var players = matchResults
+                .GroupBy(r => r.PlayerId)
+                .Where(g => playerInfo.ContainsKey(g.Key))
+                .Select(g =>
                 {
-                    PlayerId = s.PlayerId,
-                    FullName = playerInfo[s.PlayerId].FullName,
-                    GamesPlayed = s.GamesPlayed,
-                    Wins = s.Wins,
-                    Losses = s.Losses,
-                    WinPercentage = s.GamesPlayed > 0 ? Math.Round((decimal)s.Wins * 100 / s.GamesPlayed, 2) : 0,
-                    SkillLevel = playerInfo[s.PlayerId].SkillLevel
+                    var gamesPlayed = g.Count();
+                    var wins = g.Count(x => x.IsWinner == true);
+                    var losses = g.Count(x => x.IsWinner == false);
+
+                    return new LeaderboardPlayerDto
+                    {
+                        PlayerId = g.Key,
+                        FullName = playerInfo[g.Key].FullName,
+                        GamesPlayed = gamesPlayed,
+                        Wins = wins,
+                        Losses = losses,
+                        WinPercentage = gamesPlayed > 0 ? Math.Round((decimal)wins * 100 / gamesPlayed, 2) : 0,
+                        SkillLevel = playerInfo[g.Key].SkillLevel,
+                        Streak = ComputeStreak(g.Select(x => (x.EndTime, x.IsWinner)))
+                    };
                 })
                 .OrderByDescending(p => p.Wins)
                 .ThenByDescending(p => p.WinPercentage)
@@ -76,35 +81,36 @@ namespace MixFlowWebApp.Services
 
             if (!_cache.TryGetValue(cacheKey, out List<LeaderboardPlayerDto>? players))
             {
-                var weeklyStats = await _context.MatchPlayers
+                var matchResults = await _context.MatchPlayers
                     .Where(mp => mp.Match.IsCompleted && mp.Match.EndTime != null && mp.Match.EndTime >= startOfWeek)
-                    .GroupBy(mp => mp.PlayerId)
-                    .Select(g => new
-                    {
-                        PlayerId = g.Key,
-                        GamesPlayed = g.Count(),
-                        Wins = g.Count(x => x.IsWinner == true),
-                        Losses = g.Count(x => x.IsWinner == false)
-                    })
-                    .Where(x => x.GamesPlayed > 0)
+                    .Select(mp => new { mp.PlayerId, mp.IsWinner, mp.Match.EndTime })
                     .ToListAsync();
 
-                var playerIds = weeklyStats.Select(w => w.PlayerId).ToList();
+                var playerIds = matchResults.Select(r => r.PlayerId).Distinct().ToList();
                 var playerInfo = await _context.Players
                     .Where(p => playerIds.Contains(p.PlayerId))
                     .ToDictionaryAsync(p => p.PlayerId, p => p);
 
-                players = weeklyStats
-                    .Where(w => playerInfo.ContainsKey(w.PlayerId))
-                    .Select(w => new LeaderboardPlayerDto
+                players = matchResults
+                    .GroupBy(r => r.PlayerId)
+                    .Where(g => playerInfo.ContainsKey(g.Key))
+                    .Select(g =>
                     {
-                        PlayerId = w.PlayerId,
-                        FullName = playerInfo[w.PlayerId].FullName,
-                        GamesPlayed = w.GamesPlayed,
-                        Wins = w.Wins,
-                        Losses = w.Losses,
-                        WinPercentage = w.GamesPlayed > 0 ? Math.Round((decimal)w.Wins * 100 / w.GamesPlayed, 2) : 0,
-                        SkillLevel = playerInfo[w.PlayerId].SkillLevel
+                        var gamesPlayed = g.Count();
+                        var wins = g.Count(x => x.IsWinner == true);
+                        var losses = g.Count(x => x.IsWinner == false);
+
+                        return new LeaderboardPlayerDto
+                        {
+                            PlayerId = g.Key,
+                            FullName = playerInfo[g.Key].FullName,
+                            GamesPlayed = gamesPlayed,
+                            Wins = wins,
+                            Losses = losses,
+                            WinPercentage = gamesPlayed > 0 ? Math.Round((decimal)wins * 100 / gamesPlayed, 2) : 0,
+                            SkillLevel = playerInfo[g.Key].SkillLevel,
+                            Streak = ComputeStreak(g.Select(x => (x.EndTime, x.IsWinner)))
+                        };
                     })
                     .OrderByDescending(p => p.Wins)
                     .ThenByDescending(p => p.WinPercentage)
@@ -133,6 +139,30 @@ namespace MixFlowWebApp.Services
         {
             var diff = (int)utcNow.Date.DayOfWeek; // Sunday = 0
             return utcNow.Date.AddDays(-diff);
+        }
+
+        // Positive = consecutive wins, negative = consecutive losses, 0 = no completed
+        // matches (IsWinner is only null for a match that hasn't been scored yet, which
+        // shouldn't reach here since callers already filter to Match.IsCompleted).
+        private static int ComputeStreak(IEnumerable<(DateTime? EndTime, bool? IsWinner)> results)
+        {
+            var ordered = results
+                .Where(r => r.IsWinner.HasValue)
+                .OrderByDescending(r => r.EndTime)
+                .Select(r => r.IsWinner!.Value)
+                .ToList();
+
+            if (ordered.Count == 0) return 0;
+
+            var mostRecentWasWin = ordered[0];
+            var streak = 0;
+            foreach (var isWinner in ordered)
+            {
+                if (isWinner != mostRecentWasWin) break;
+                streak++;
+            }
+
+            return mostRecentWasWin ? streak : -streak;
         }
     }
 }
