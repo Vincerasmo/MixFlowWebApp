@@ -27,6 +27,12 @@ public class MixFlowDbContext : DbContext
             .HasForeignKey(s => s.OrganizerId)
             .OnDelete(DeleteBehavior.Cascade);
 
+        modelBuilder.Entity<Organizer>()
+            .HasMany<Player>()
+            .WithOne(p => p.Organizer)
+            .HasForeignKey(p => p.OrganizerId)
+            .OnDelete(DeleteBehavior.Cascade);
+
         // Session Relationships
         modelBuilder.Entity<Session>()
             .HasMany(s => s.SessionPlayers)
@@ -77,6 +83,9 @@ public class MixFlowDbContext : DbContext
         modelBuilder.Entity<SessionPlayer>()
             .HasIndex(sp => new { sp.SessionId, sp.PlayerId })
             .IsUnique();
+
+        modelBuilder.Entity<Player>()
+            .HasIndex(p => p.OrganizerId);
 
         modelBuilder.Entity<QueueEntry>()
             .HasIndex(q => new { q.SessionId, q.PlayerId })

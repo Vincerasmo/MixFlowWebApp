@@ -59,8 +59,15 @@ namespace MixFlowWebApp.Controllers
         {
             if (id <= 0) return BadRequest(new { error = "Invalid session ID" });
 
+            var userId = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (string.IsNullOrEmpty(userId)) return Unauthorized(new { error = "User not authenticated" });
+
+            var organizer = await _organizerService.GetOrganizerByUserIdAsync(userId);
+            if (organizer == null) return Unauthorized(new { error = "Organizer account not found" });
+
             var session = await _sessionService.GetSessionByIdAsync(id);
-            if (session == null) return NotFound(new { error = $"Session with ID {id} not found" });
+            if (session == null || session.OrganizerId != organizer.OrganizerId)
+                return NotFound(new { error = $"Session with ID {id} not found" });
 
             return Ok(_mapper.Map<SessionDto>(session));
         }

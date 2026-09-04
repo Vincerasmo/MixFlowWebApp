@@ -3,6 +3,7 @@
     public class Player
     {
         public int PlayerId { get; set; }
+        public int OrganizerId { get; set; }
         public string FullName { get; set; } = string.Empty;
         public string SkillCategory { get; set; } = string.Empty;
         public decimal SkillLevel { get; set; }
@@ -13,6 +14,7 @@
         public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
         public DateTime? UpdatedAt { get; set; }
 
+        public Organizer Organizer { get; set; } = null!;
         public ICollection<SessionPlayer> SessionPlayers { get; set; } = new List<SessionPlayer>();
         public ICollection<QueueEntry> QueueEntries { get; set; } = new List<QueueEntry>();
         public ICollection<PlayerMatchHistory> MatchHistory { get; set; } = new List<PlayerMatchHistory>();

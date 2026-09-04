@@ -74,15 +74,20 @@ namespace MixFlowWebApp.Services
         }
 
         // ---------------- Overall Leaderboard (weekly, resets every Sunday) ----------------
-        public async Task<List<LeaderboardPlayerDto>> GetOverallLeaderboardAsync()
+        public async Task<List<LeaderboardPlayerDto>> GetOverallLeaderboardAsync(int organizerId)
         {
             var startOfWeek = GetStartOfWeekSunday(DateTime.UtcNow);
-            var cacheKey = $"{OverallLeaderboardCacheKey}_{startOfWeek:yyyyMMdd}";
+            var cacheKey = $"{OverallLeaderboardCacheKey}_{organizerId}_{startOfWeek:yyyyMMdd}";
 
             if (!_cache.TryGetValue(cacheKey, out List<LeaderboardPlayerDto>? players))
             {
+                // Scoped to matches from sessions belonging to THIS organizer only — every
+                // organizer's account is its own isolated space, never a shared global board.
                 var matchResults = await _context.MatchPlayers
-                    .Where(mp => mp.Match.IsCompleted && mp.Match.EndTime != null && mp.Match.EndTime >= startOfWeek)
+                    .Where(mp => mp.Match.Session.OrganizerId == organizerId
+                              && mp.Match.IsCompleted
+                              && mp.Match.EndTime != null
+                              && mp.Match.EndTime >= startOfWeek)
                     .Select(mp => new { mp.PlayerId, mp.IsWinner, mp.Match.EndTime })
                     .ToListAsync();
 
@@ -129,7 +134,7 @@ namespace MixFlowWebApp.Services
             return players!;
         }
 
-        public void InvalidateOverallLeaderboardCache()
+        public void InvalidateOverallLeaderboardCache(int organizerId)
         {
             var startOfWeek = GetStartOfWeekSunday(DateTime.UtcNow);
             _cache.Remove($"{OverallLeaderboardCacheKey}_{startOfWeek:yyyyMMdd}");

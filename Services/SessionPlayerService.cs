@@ -30,6 +30,18 @@ namespace MixFlowWebApp.Services
         /// Add a player to a session (check-in).
         public async Task<SessionPlayer?> AddPlayerToSessionAsync(int sessionId, int playerId)
         {
+            var session = await _context.Sessions.FirstOrDefaultAsync(s => s.SessionId == sessionId);
+            if (session == null) return null;
+
+            var player = await _context.Players.FirstOrDefaultAsync(p => p.PlayerId == playerId);
+            if (player == null) return null;
+
+            // A session can only ever draw from its own organizer's roster — otherwise
+            // one organizer's session could pull in another organizer's player just by
+            // guessing/incrementing a player ID.
+            if (player.OrganizerId != session.OrganizerId)
+                throw new InvalidOperationException("This player doesn't belong to this organizer's roster.");
+
             var existing = await _context.SessionPlayers
                 .Include(sp => sp.Player)
                 .FirstOrDefaultAsync(sp => sp.SessionId == sessionId && sp.PlayerId == playerId);

@@ -696,7 +696,11 @@ namespace MixFlowWebApp.Services
             await RecordPlayerMatchHistoryAsync(match.MatchId);
             await UpdatePlayerStatsAfterMatchAsync(match.MatchId);
 
-            _leaderboardService.InvalidateOverallLeaderboardCache();
+            var organizerId = await _context.Sessions
+                .Where(s => s.SessionId == sessionId)
+                .Select(s => s.OrganizerId)
+                .FirstOrDefaultAsync();
+            _leaderboardService.InvalidateOverallLeaderboardCache(organizerId);
 
             await HandlePostMatchAsync(sessionId, team1Players.Concat(team2Players).ToList());
 
