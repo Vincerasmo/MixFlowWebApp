@@ -25,9 +25,6 @@ builder.Services.AddControllers()
 builder.Services.AddDbContext<MixFlowDbContext>(options =>
     options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
 
-// Add memory cache
-builder.Services.AddMemoryCache();
-
 //add automapper
 builder.Services.AddAutoMapper(config =>
 {

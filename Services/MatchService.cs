@@ -14,12 +14,10 @@ namespace MixFlowWebApp.Services
         private const int TargetReadyMatchCount = 2;
 
         private readonly MixFlowDbContext _context;
-        private readonly ILeaderboardService _leaderboardService;
 
-        public MatchService(MixFlowDbContext context, ILeaderboardService leaderboardService)
+        public MatchService(MixFlowDbContext context)
         {
             _context = context;
-            _leaderboardService = leaderboardService;
         }
 
         // ---------------- Queue Management ----------------
@@ -695,12 +693,6 @@ namespace MixFlowWebApp.Services
 
             await RecordPlayerMatchHistoryAsync(match.MatchId);
             await UpdatePlayerStatsAfterMatchAsync(match.MatchId);
-
-            var organizerId = await _context.Sessions
-                .Where(s => s.SessionId == sessionId)
-                .Select(s => s.OrganizerId)
-                .FirstOrDefaultAsync();
-            _leaderboardService.InvalidateOverallLeaderboardCache(organizerId);
 
             await HandlePostMatchAsync(sessionId, team1Players.Concat(team2Players).ToList());
 

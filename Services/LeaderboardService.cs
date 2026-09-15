@@ -1,5 +1,4 @@
 ﻿using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Caching.Memory;
 using MixFlowWebApp.Data;
 using MixFlowWebApp.DTOs.LeaderboardDTOs;
 using MixFlowWebApp.Interfaces.Services;
@@ -9,15 +8,11 @@ namespace MixFlowWebApp.Services
     public class LeaderboardService : ILeaderboardService
     {
         private readonly MixFlowDbContext _context;
-        private readonly IMemoryCache _cache;
         private const int SessionLeaderboardLimit = 30;
-        private const int OverallLeaderboardLimit = 30;
-        private const string OverallLeaderboardCacheKey = "OverallLeaderboard";
 
-        public LeaderboardService(MixFlowDbContext context, IMemoryCache cache)
+        public LeaderboardService(MixFlowDbContext context)
         {
             _context = context;
-            _cache = cache;
         }
 
         // ---------------- Session Leaderboard ----------------
@@ -71,79 +66,6 @@ namespace MixFlowWebApp.Services
             }
 
             return players;
-        }
-
-        // ---------------- Overall Leaderboard (weekly, resets every Sunday) ----------------
-        public async Task<List<LeaderboardPlayerDto>> GetOverallLeaderboardAsync(int organizerId)
-        {
-            var startOfWeek = GetStartOfWeekSunday(DateTime.UtcNow);
-            var cacheKey = $"{OverallLeaderboardCacheKey}_{organizerId}_{startOfWeek:yyyyMMdd}";
-
-            if (!_cache.TryGetValue(cacheKey, out List<LeaderboardPlayerDto>? players))
-            {
-                // Scoped to matches from sessions belonging to THIS organizer only — every
-                // organizer's account is its own isolated space, never a shared global board.
-                var matchResults = await _context.MatchPlayers
-                    .Where(mp => mp.Match.Session.OrganizerId == organizerId
-                              && mp.Match.IsCompleted
-                              && mp.Match.EndTime != null
-                              && mp.Match.EndTime >= startOfWeek)
-                    .Select(mp => new { mp.PlayerId, mp.IsWinner, mp.Match.EndTime })
-                    .ToListAsync();
-
-                var playerIds = matchResults.Select(r => r.PlayerId).Distinct().ToList();
-                var playerInfo = await _context.Players
-                    .Where(p => playerIds.Contains(p.PlayerId))
-                    .ToDictionaryAsync(p => p.PlayerId, p => p);
-
-                players = matchResults
-                    .GroupBy(r => r.PlayerId)
-                    .Where(g => playerInfo.ContainsKey(g.Key))
-                    .Select(g =>
-                    {
-                        var gamesPlayed = g.Count();
-                        var wins = g.Count(x => x.IsWinner == true);
-                        var losses = g.Count(x => x.IsWinner == false);
-
-                        return new LeaderboardPlayerDto
-                        {
-                            PlayerId = g.Key,
-                            FullName = playerInfo[g.Key].FullName,
-                            GamesPlayed = gamesPlayed,
-                            Wins = wins,
-                            Losses = losses,
-                            WinPercentage = gamesPlayed > 0 ? Math.Round((decimal)wins * 100 / gamesPlayed, 2) : 0,
-                            SkillLevel = playerInfo[g.Key].SkillLevel,
-                            Streak = ComputeStreak(g.Select(x => (x.EndTime, x.IsWinner)))
-                        };
-                    })
-                    .OrderByDescending(p => p.Wins)
-                    .ThenByDescending(p => p.WinPercentage)
-                    .ThenByDescending(p => p.SkillLevel)
-                    .Take(OverallLeaderboardLimit)
-                    .ToList();
-
-                int rank = 1;
-                foreach (var player in players)
-                {
-                    player.Rank = rank++;
-                }
-
-                _cache.Set(cacheKey, players, TimeSpan.FromMinutes(10080));
-            }
-            return players!;
-        }
-
-        public void InvalidateOverallLeaderboardCache(int organizerId)
-        {
-            var startOfWeek = GetStartOfWeekSunday(DateTime.UtcNow);
-            _cache.Remove($"{OverallLeaderboardCacheKey}_{startOfWeek:yyyyMMdd}");
-        }
-
-        private static DateTime GetStartOfWeekSunday(DateTime utcNow)
-        {
-            var diff = (int)utcNow.Date.DayOfWeek; // Sunday = 0
-            return utcNow.Date.AddDays(-diff);
         }
 
         // Positive = consecutive wins, negative = consecutive losses, 0 = no completed

@@ -31,7 +31,7 @@ public class MixFlowDbContext : DbContext
             .HasMany<Player>()
             .WithOne(p => p.Organizer)
             .HasForeignKey(p => p.OrganizerId)
-            .OnDelete(DeleteBehavior.Cascade);
+            .OnDelete(DeleteBehavior.Restrict);   // was Cascade
 
         // Session Relationships
         modelBuilder.Entity<Session>()

@@ -1,4 +1,5 @@
-﻿using MixFlowWebApp.Models;
+﻿using MixFlowWebApp.DTOs.PlayerDTOs;
+using MixFlowWebApp.Models;
 
 namespace MixFlowWebApp.Interfaces.Services
 {
@@ -9,5 +10,6 @@ namespace MixFlowWebApp.Interfaces.Services
         Task<List<Player>> GetPlayersByOrganizerAsync(int organizerId);
         Task<Player?> UpdatePlayerAsync(int organizerId, int playerId, Player updatedPlayer);
         Task<bool> DeletePlayerAsync(int organizerId, int playerId);
+        Task<PlayerHistoryDto?> GetPlayerHistoryAsync(int organizerId, int playerId);
     }
 }

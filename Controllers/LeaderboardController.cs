@@ -51,18 +51,5 @@ namespace MixFlowWebApp.Controllers
             var dtoList = _mapper.Map<List<LeaderboardPlayerDto>>(players);
             return Ok(dtoList);
         }
-
-        // Overall leaderboard endpoint — scoped to the current organizer's own sessions
-        // only, never a shared board across every organizer's account.
-        [HttpGet("overall")]
-        public async Task<ActionResult<List<LeaderboardPlayerDto>>> GetOverallLeaderboard()
-        {
-            var organizer = await GetCurrentOrganizerAsync();
-            if (organizer == null) return Unauthorized(new { error = "Organizer account not found" });
-
-            var players = await _leaderboardService.GetOverallLeaderboardAsync(organizer.OrganizerId);
-            var dtoList = _mapper.Map<List<LeaderboardPlayerDto>>(players);
-            return Ok(dtoList);
-        }
     }
 }

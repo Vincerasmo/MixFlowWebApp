@@ -3,6 +3,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Metadata;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using MixFlowWebApp.Data;
 
@@ -11,9 +12,11 @@ using MixFlowWebApp.Data;
 namespace MixFlowWebApp.Migrations
 {
     [DbContext(typeof(MixFlowDbContext))]
-    partial class MixFlowDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260904092656_AddOrganizerIdToPlayer")]
+    partial class AddOrganizerIdToPlayer
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -362,7 +365,7 @@ namespace MixFlowWebApp.Migrations
                     b.HasOne("MixFlowWebApp.Models.Organizer", "Organizer")
                         .WithMany()
                         .HasForeignKey("OrganizerId")
-                        .OnDelete(DeleteBehavior.Restrict)
+                        .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
 
                     b.Navigation("Organizer");

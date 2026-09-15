@@ -137,5 +137,18 @@ namespace MixFlowWebApp.Controllers
             _logger.LogInformation("Player {PlayerId} deleted successfully", id);
             return NoContent();
         }
+
+        /// Full history for one player — every match, partner, opponents, and result,
+        [HttpGet("{id}/history")]
+        public async Task<ActionResult<PlayerHistoryDto>> GetPlayerHistory(int id)
+        {
+            var organizer = await GetCurrentOrganizerAsync();
+            if (organizer == null) return Unauthorized(new { error = "Organizer account not found" });
+
+            var history = await _playerService.GetPlayerHistoryAsync(organizer.OrganizerId, id);
+            if (history == null) return NotFound(new { error = $"Player with ID {id} not found" });
+
+            return Ok(history);
+        }
     }
 }
