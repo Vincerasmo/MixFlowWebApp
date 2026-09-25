@@ -113,8 +113,18 @@ namespace MixFlowWebApp.Controllers.Auth
             if (string.IsNullOrWhiteSpace(dto.Email) || string.IsNullOrWhiteSpace(dto.FullName))
                 return BadRequest(new { error = "Full name and email are required" });
 
+            var email = dto.Email.Trim();
+
+            // 🐛 FIX: this check lives here, in the method body, on purpose — not as a
+            // [RegularExpression] on EmailSignupDto. A DataAnnotation only runs if
+            // [ApiController]'s automatic model-validation pipeline actually fires for
+            // this request; doing it explicitly here guarantees it runs every time,
+            // with this app's normal { error: "..." } response shape.
+            if (!email.EndsWith("@gmail.com", StringComparison.OrdinalIgnoreCase))
+                return BadRequest(new { error = "Please use a @gmail.com email address." });
+
             var syntheticUserId = $"email-{Guid.NewGuid()}";
-            var organizer = await _organizerService.CreateOrganizerAsync(syntheticUserId, dto.FullName, dto.Email);
+            var organizer = await _organizerService.CreateOrganizerAsync(syntheticUserId, dto.FullName, email);
 
             if (organizer == null)
                 return Conflict(new { error = "An account with this email already exists. Please log in instead." });

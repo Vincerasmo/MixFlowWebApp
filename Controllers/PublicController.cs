@@ -2,6 +2,7 @@
 using Microsoft.AspNetCore.Mvc;
 using MixFlowWebApp.DTOs.LeaderboardDTOs;
 using MixFlowWebApp.DTOs.MatchDTOs;
+using MixFlowWebApp.DTOs.PublicDTOs;
 using MixFlowWebApp.DTOs.QueueEntryDTOs;
 using MixFlowWebApp.Interfaces.Services;
 
@@ -103,6 +104,55 @@ namespace MixFlowWebApp.Controllers
 
             var leaderboard = await _leaderboardService.GetSessionLeaderboardAsync(sessionId);
             return Ok(leaderboard);
+        }
+
+        // Post-session wrap-up for the public /report/:sessionId page — a richer,
+        // shareable summary distinct from the live Watch page: MVP callout, final
+        // standings, and a "biggest win" highlight, on top of the same match list
+        // Watch already shows once a session ends.
+        [HttpGet("{sessionId}/report")]
+        public async Task<ActionResult<SessionReportDto>> GetSessionReport(int sessionId)
+        {
+            var session = await _sessionService.GetSessionByIdAsync(sessionId);
+            if (session == null) return NotFound(new { error = "Session not found." });
+
+            var completedMatches = await _matchService.GetSessionMatchesAsync(sessionId);
+            var standings = await _leaderboardService.GetSessionLeaderboardAsync(sessionId);
+
+            var totalDistinctPlayers = completedMatches
+                .SelectMany(m => m.MatchPlayers)
+                .Select(mp => mp.PlayerId)
+                .Distinct()
+                .Count();
+
+            // Largest |Team1Score - Team2Score| among completed matches with both scores
+            // recorded. Ties broken by whichever match comes first in the already-applied
+            // "most recent first" ordering from GetSessionMatchesAsync.
+            var biggestWinMatch = completedMatches
+                .Where(m => m.Team1Score.HasValue && m.Team2Score.HasValue)
+                .OrderByDescending(m => Math.Abs(m.Team1Score!.Value - m.Team2Score!.Value))
+                .FirstOrDefault();
+
+            var report = new SessionReportDto
+            {
+                SessionId = session.SessionId,
+                SessionName = session.SessionName,
+                SessionDate = session.SessionDate,
+                StartTime = session.StartTime,
+                EndTime = session.EndTime,
+                NumberOfCourts = session.NumberOfCourts,
+                Status = session.Status,
+                TotalMatchesPlayed = completedMatches.Count,
+                TotalDistinctPlayers = totalDistinctPlayers,
+                FinalStandings = standings,
+                Mvp = standings.FirstOrDefault(p => p.Rank == 1),
+                BiggestWin = biggestWinMatch != null ? _mapper.Map<MatchDto>(biggestWinMatch) : null,
+                BiggestWinMargin = biggestWinMatch != null
+                    ? Math.Abs(biggestWinMatch.Team1Score!.Value - biggestWinMatch.Team2Score!.Value)
+                    : 0
+            };
+
+            return Ok(report);
         }
     }
 }
